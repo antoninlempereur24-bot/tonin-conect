@@ -61,18 +61,34 @@
           <small id="me-sub"></small>
         </div>
         <div class="side-actions">
+          <button id="btn-reports" class="icon-btn hidden" title="Signalements">⚠️<span id="reports-badge" class="badge hidden">0</span></button>
           <button id="btn-admin" class="icon-btn hidden" title="Panneau administrateur">🛡️</button>
           <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
           <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
         </div>
       </header>
 
-      <div class="side-tools">
-        <input id="search" type="search" placeholder="Rechercher un contact…" />
-        <button id="btn-add" class="btn small primary" title="Ajouter un contact">＋ Ajouter</button>
+      <div id="pane-chats" class="pane">
+        <div class="side-tools">
+          <input id="search" type="search" placeholder="Rechercher un contact…" />
+          <button id="btn-add" class="btn small primary" title="Ajouter un contact">＋ Ajouter</button>
+        </div>
+        <div id="contact-list"></div>
       </div>
 
-      <div id="contact-list"></div>
+      <div id="pane-stories" class="pane hidden">
+        <div id="stories-list" class="list-scroll"></div>
+      </div>
+
+      <div id="pane-calls" class="pane hidden">
+        <div id="calls-list" class="list-scroll"></div>
+      </div>
+
+      <nav id="tabbar">
+        <button data-tab="chats" class="active"><span class="ico">💬</span>Discussions</button>
+        <button data-tab="stories"><span class="ico">🟣</span>Stories<i id="stories-dot" class="tab-dot hidden"></i></button>
+        <button data-tab="calls"><span class="ico">📞</span>Appels</button>
+      </nav>
     </aside>
 
     <main id="chat">
@@ -85,11 +101,14 @@
       <div id="chat-panel" class="hidden">
         <header class="chat-head">
           <button id="btn-back" class="icon-btn" title="Retour">←</button>
-          <div id="chat-avatar"></div>
-          <div class="me-info">
-            <strong id="chat-name"></strong>
-            <small id="chat-status"></small>
+          <div id="chat-id" class="chat-id" title="Voir le profil">
+            <div id="chat-avatar"></div>
+            <div class="me-info">
+              <strong id="chat-name"></strong>
+              <small id="chat-status"></small>
+            </div>
           </div>
+          <button id="btn-call" class="icon-btn" title="Appeler">📞</button>
         </header>
         <div id="messages"></div>
         <form id="send-form" autocomplete="off">
@@ -124,8 +143,11 @@
         </div>
       </div>
 
-      <label id="field-pseudo">Pseudo visible par les autres
-        <input id="settings-pseudo" type="text" maxlength="20" />
+      <label id="field-pseudo">Nom d'utilisateur (choisi à l'inscription, non modifiable)
+        <input id="settings-pseudo" type="text" maxlength="20" disabled />
+      </label>
+      <label id="field-nickname">Surnom (affiché à tes contacts)
+        <input id="settings-nickname" type="text" maxlength="20" placeholder="Ex : Juju" />
       </label>
 
       <h3 class="section-title">Sécurité</h3>
@@ -190,6 +212,7 @@
               <th>Code secret</th>
               <th>Code de partage</th>
               <th>Contacts</th>
+              <th>Signalements</th>
               <th>Créé le</th>
               <th>Statut</th>
               <th></th>
@@ -199,6 +222,114 @@
         </table>
       </div>
       <button id="admin-refresh" class="btn small" type="button">↻ Actualiser</button>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : PROFIL DU CONTACT ====================== -->
+  <div id="modal-profile" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <div class="profile-head">
+        <div id="profile-avatar"></div>
+        <h2 id="profile-name"></h2>
+      </div>
+      <dl class="profile-info">
+        <dt>Nom d'utilisateur</dt><dd id="profile-pseudo"></dd>
+        <dt>Surnom public</dt><dd id="profile-nick"></dd>
+        <dt>Code de parrainage</dt><dd id="profile-code"></dd>
+        <dt>Parrainé le</dt><dd id="profile-since"></dd>
+      </dl>
+      <div id="profile-actions">
+        <label>Ton surnom pour ce contact
+          <div class="row">
+            <input id="profile-alias" type="text" maxlength="20" placeholder="Ex : Juju" />
+            <button id="profile-alias-save" class="btn small" type="button">OK</button>
+          </div>
+        </label>
+        <button id="profile-report" class="btn danger" type="button">🚩 Signaler</button>
+        <button id="profile-delete" class="btn danger" type="button">🗑 Supprimer le contact</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : SIGNALER ====================== -->
+  <div id="modal-report" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🚩 Signaler</h2>
+      <form id="report-form" autocomplete="off">
+        <label>Pourquoi signales-tu cette personne ?
+          <input id="report-reason" type="text" maxlength="300" required placeholder="Ex : insultes, harcèlement…" />
+        </label>
+        <p id="report-error" class="error"></p>
+        <button class="btn primary" type="submit">Envoyer le signalement</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : SIGNALEMENTS (ADMIN) ====================== -->
+  <div id="modal-reports" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>⚠️ Signalements</h2>
+      <div id="reports-list"></div>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : NOUVELLE STORY ====================== -->
+  <div id="modal-story-new" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>Ma story</h2>
+      <img id="story-preview" class="story-preview hidden" alt="Aperçu" />
+      <div class="row wrap">
+        <label class="btn small file-btn">📷 Prendre une photo
+          <input id="story-cam" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="btn small file-btn">🖼 Choisir un fichier
+          <input id="story-file" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <label style="margin-top:14px">Texte sous la photo (facultatif)
+        <input id="story-text" type="text" maxlength="300" placeholder="Écris quelque chose…" />
+      </label>
+      <p id="story-error" class="error"></p>
+      <button id="story-publish" class="btn primary" type="button">Publier</button>
+    </div>
+  </div>
+
+  <!-- ====================== VISIONNEUSE DE STORY ====================== -->
+  <div id="modal-story" class="modal lightbox hidden">
+    <button class="modal-close" data-close>✕</button>
+    <div class="story-box">
+      <div class="story-top">
+        <span id="story-author"></span>
+        <small id="story-time"></small>
+        <button id="story-delete" class="icon-btn hidden" title="Supprimer ma story">🗑</button>
+      </div>
+      <img id="story-img" alt="Story" />
+      <p id="story-caption"></p>
+      <div class="story-bar">
+        <button id="story-prev" class="btn small" type="button">‹</button>
+        <button id="story-like" class="btn small" type="button">🤍 0</button>
+        <button id="story-viewers-btn" class="btn small hidden" type="button">👁 <span id="story-views">0</span></button>
+        <button id="story-next" class="btn small" type="button">›</button>
+      </div>
+      <div id="story-viewers" class="story-viewers hidden"></div>
+    </div>
+  </div>
+
+  <!-- ====================== APPEL EN COURS ====================== -->
+  <div id="call-overlay" class="call-overlay hidden">
+    <div class="call-box">
+      <div id="call-avatar"></div>
+      <h2 id="call-name"></h2>
+      <p id="call-status"></p>
+      <div class="call-actions">
+        <button id="call-accept" class="call-btn ok hidden" type="button" title="Décrocher">📞</button>
+        <button id="call-hangup" class="call-btn bad" type="button" title="Raccrocher">📵</button>
+      </div>
+      <audio id="call-audio" autoplay></audio>
     </div>
   </div>
 

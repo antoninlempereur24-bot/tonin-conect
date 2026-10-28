@@ -64,6 +64,9 @@ const emptyDb = () => ({
   messages: [],
   sessions: {},
   admin: { pin: '', avatar: '', appearance: null },
+  reports: [],
+  stories: [],
+  calls: [],
 });
 
 let db = emptyDb();
@@ -77,6 +80,9 @@ function normalizeDb(d) {
     messages: Array.isArray(d.messages) ? d.messages : [],
     sessions: d.sessions && typeof d.sessions === 'object' ? d.sessions : {},
     admin: Object.assign(base.admin, d.admin || {}),
+    reports: Array.isArray(d.reports) ? d.reports : [],
+    stories: Array.isArray(d.stories) ? d.stories : [],
+    calls: Array.isArray(d.calls) ? d.calls : [],
   };
 }
 
@@ -220,7 +226,7 @@ function createPgStorage() {
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
@@ -363,11 +369,11 @@ const isOnline = (id) => (online.get(id) || 0) > 0;
 const DEFAULT_APPEARANCE = { theme: 'dark', accent: 'violet' };
 
 function adminPublic() {
-  return { id: 'admin', pseudo: 'Administrateur', avatar: db.admin.avatar || '', isAdmin: true, online: isOnline('admin') };
+  return { id: 'admin', pseudo: 'Administrateur', nickname: '', name: 'Administrateur', avatar: db.admin.avatar || '', isAdmin: true, online: isOnline('admin') };
 }
 
 function publicUser(u) {
-  return { id: u.id, pseudo: u.pseudo, avatar: u.avatar || '', isAdmin: false, online: isOnline(u.id) };
+  return { id: u.id, pseudo: u.pseudo, nickname: u.nickname || '', name: u.nickname || u.pseudo, avatar: u.avatar || '', isAdmin: false, online: isOnline(u.id) };
 }
 
 function meFull(userId) {
@@ -375,6 +381,8 @@ function meFull(userId) {
     return {
       id: 'admin',
       pseudo: 'Administrateur',
+      nickname: '',
+      name: 'Administrateur',
       avatar: db.admin.avatar || '',
       isAdmin: true,
       appearance: db.admin.appearance || DEFAULT_APPEARANCE,
@@ -384,6 +392,8 @@ function meFull(userId) {
   return {
     id: u.id,
     pseudo: u.pseudo,
+    nickname: u.nickname || '',
+    name: u.nickname || u.pseudo,
     avatar: u.avatar || '',
     pin: u.pin,
     shareCode: u.shareCode,
@@ -401,12 +411,12 @@ function canChat(a, b) {
 }
 
 function contactListFor(userId) {
+  const viewer = userId === 'admin' ? null : getUser(userId);
   let list;
-  if (userId === 'admin') {
+  if (!viewer) {
     list = db.users.map(publicUser);
   } else {
-    const me = getUser(userId);
-    list = me.contacts.map(getUser).filter(Boolean).map(publicUser);
+    list = viewer.contacts.map(getUser).filter(Boolean).map(publicUser);
     list.unshift(adminPublic());
   }
   const last = {};
@@ -414,7 +424,18 @@ function contactListFor(userId) {
     if (m.from === userId) last[m.to] = m;
     else if (m.to === userId) last[m.from] = m;
   }
-  return list.map((c) => ({ ...c, last: last[c.id] || null }));
+  return list.map((c) => {
+    const u = c.isAdmin ? null : getUser(c.id);
+    const alias = (viewer && viewer.aliases && viewer.aliases[c.id]) || '';
+    return {
+      ...c,
+      name: alias || c.name,
+      alias,
+      shareCode: u ? u.shareCode : '',
+      since: (viewer && viewer.addedAt && viewer.addedAt[c.id]) || null,
+      last: last[c.id] || null,
+    };
+  });
 }
 
 /* ------------------------------ Express ------------------------------ */
@@ -565,6 +586,10 @@ app.post('/api/login', (req, res) => {
       shareCode: newShareCode(),
       contacts: [],
       appearance: null,
+      nickname: '',
+      aliases: {},
+      addedAt: {},
+      warnings: 0,
       createdAt: Date.now(),
     };
     db.users.push(user);
@@ -608,10 +633,10 @@ app.put('/api/me', auth, (req, res) => {
 });
 
 function updateMe(req, res) {
-  const { pseudo, avatar: rawAvatar, pin, appearance } = req.body || {};
+  const { nickname, avatar: rawAvatar, pin, appearance } = req.body || {};
   const avatar = normalizeAvatar(rawAvatar);
   const user = req.isAdmin ? null : getUser(req.userId);
-  let newPseudo = null;
+  let newNick;
   let newPin = null;
   let newAppearance = null;
 
@@ -625,13 +650,10 @@ function updateMe(req, res) {
   if (avatar !== undefined && !validAvatar(avatar)) {
     return res.status(400).json({ error: 'Photo de profil invalide (URL http(s) ou image).' });
   }
-  if (!req.isAdmin && pseudo !== undefined) {
-    const p = cleanPseudo(pseudo);
-    if (!p) return res.status(400).json({ error: 'Le pseudo doit faire entre 2 et 20 caractères.' });
-    if (RESERVED.includes(p.toLowerCase())) return res.status(400).json({ error: 'Ce pseudo est réservé.' });
-    const other = findByPseudo(p);
-    if (other && other.id !== user.id) return res.status(409).json({ error: 'Ce pseudo est déjà pris.' });
-    newPseudo = p;
+  if (!req.isAdmin && nickname !== undefined) {
+    const n = String(nickname || '').trim().replace(/\s+/g, ' ').slice(0, 20);
+    if (n && RESERVED.includes(n.toLowerCase())) return res.status(400).json({ error: 'Ce surnom est réservé.' });
+    newNick = n;
   }
   if (pin !== undefined && pin !== '') {
     const code = String(pin);
@@ -653,8 +675,8 @@ function updateMe(req, res) {
     target.avatar = avatar;
     visible = true;
   }
-  if (newPseudo && newPseudo !== user.pseudo) {
-    user.pseudo = newPseudo;
+  if (newNick !== undefined && newNick !== (user.nickname || '')) {
+    user.nickname = newNick;
     visible = true;
   }
   if (newPin) {
@@ -697,9 +719,82 @@ app.post('/api/contacts', auth, (req, res) => {
   if (me.contacts.includes(target.id)) return res.status(400).json({ error: 'Cet utilisateur est déjà dans tes contacts.' });
   me.contacts.push(target.id);
   if (!target.contacts.includes(me.id)) target.contacts.push(me.id);
+  const now = Date.now();
+  me.addedAt = me.addedAt || {};
+  target.addedAt = target.addedAt || {};
+  me.addedAt[target.id] = now;
+  target.addedAt[me.id] = now;
   saveDb();
   io.to(me.id).to(target.id).emit('contacts:update');
   res.json(publicUser(target));
+});
+
+/* --------- Aides : messages & noms --------- */
+
+function addMessage(from, to, text, image) {
+  const msg = { id: uid(), from, to, text, ts: Date.now() };
+  if (image) msg.image = image;
+  db.messages.push(msg);
+  storage.appendMessage(msg).catch((e) => console.error('Message non enregistré :', e.message));
+  saveDb();
+  io.to(from).to(to).emit('message', msg);
+  return msg;
+}
+
+function displayName(viewerId, targetId) {
+  if (targetId === 'admin') return 'Administrateur';
+  const t = getUser(targetId);
+  if (!t) return 'Compte supprimé';
+  const v = viewerId === 'admin' ? null : getUser(viewerId);
+  return (v && v.aliases && v.aliases[targetId]) || t.nickname || t.pseudo;
+}
+
+/* --------- Surnom local, suppression de contact, signalement --------- */
+
+app.put('/api/contacts/:id/alias', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible.' });
+  const me = getUser(req.userId);
+  const id = req.params.id;
+  if (!me.contacts.includes(id)) return res.status(404).json({ error: 'Contact introuvable.' });
+  const alias = String((req.body && req.body.alias) || '').trim().replace(/\s+/g, ' ').slice(0, 20);
+  me.aliases = me.aliases || {};
+  if (alias) me.aliases[id] = alias; else delete me.aliases[id];
+  saveDb();
+  res.json({ alias });
+});
+
+app.delete('/api/contacts/:id', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible.' });
+  const me = getUser(req.userId);
+  const id = req.params.id;
+  const other = getUser(id);
+  if (!other || !me.contacts.includes(id)) return res.status(404).json({ error: 'Contact introuvable.' });
+  me.contacts = me.contacts.filter((c) => c !== id);
+  other.contacts = other.contacts.filter((c) => c !== me.id);
+  if (me.aliases) delete me.aliases[id];
+  if (me.addedAt) delete me.addedAt[id];
+  if (other.aliases) delete other.aliases[me.id];
+  if (other.addedAt) delete other.addedAt[me.id];
+  saveDb();
+  io.to(me.id).to(id).emit('contacts:update');
+  io.to(me.id).to(id).emit('stories:update');
+  res.json({ ok: true });
+});
+
+app.post('/api/contacts/:id/report', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible.' });
+  const me = getUser(req.userId);
+  const id = req.params.id;
+  if (!getUser(id) || !me.contacts.includes(id)) return res.status(404).json({ error: 'Contact introuvable.' });
+  const reason = String((req.body && req.body.reason) || '').trim().slice(0, 300);
+  if (!reason) return res.status(400).json({ error: 'Explique brièvement la raison du signalement.' });
+  if (db.reports.some((r) => r.reporterId === me.id && r.targetId === id && r.status === 'open')) {
+    return res.status(409).json({ error: 'Tu as déjà signalé cette personne, l\'administrateur va traiter ta demande.' });
+  }
+  db.reports.push({ id: uid(), reporterId: me.id, targetId: id, reason, ts: Date.now(), status: 'open' });
+  saveDb();
+  io.to('admin').emit('reports:update');
+  res.json({ ok: true });
 });
 
 /* --------- Messages & photos --------- */
@@ -730,6 +825,165 @@ app.post('/api/upload', auth, async (req, res) => {
   }
 });
 
+/* --------- Stories (visibles 24 h) --------- */
+
+const STORY_TTL = 24 * 3600 * 1000;
+const IMG_RE = /^\/uploads\/[a-f0-9]{24}\.(jpg|png|webp|gif)$/;
+
+function canSeeStory(viewerId, s) {
+  if (s.userId === viewerId) return true;
+  const v = getUser(viewerId);
+  return !!v && !!getUser(s.userId) && v.contacts.includes(s.userId);
+}
+
+function storyView(s, viewerId) {
+  const mine = s.userId === viewerId;
+  const o = {
+    id: s.id,
+    userId: s.userId,
+    authorName: displayName(viewerId, s.userId),
+    image: s.image,
+    text: s.text || '',
+    ts: s.ts,
+    likes: s.likes.length,
+    liked: s.likes.includes(viewerId),
+    seen: mine || !!s.views[viewerId],
+    mine,
+    viewsCount: Object.keys(s.views).length,
+  };
+  if (mine) {
+    o.viewers = Object.entries(s.views)
+      .filter(([u]) => getUser(u))
+      .map(([u, ts]) => ({ id: u, name: displayName(viewerId, u), ts, liked: s.likes.includes(u) }));
+  }
+  return o;
+}
+
+function notifyStory(ownerId) {
+  const o = getUser(ownerId);
+  [ownerId, ...(o ? o.contacts : [])].forEach((r) => io.to(r).emit('stories:update'));
+}
+
+async function purgeStories() {
+  const lim = Date.now() - STORY_TTL;
+  const old = db.stories.filter((s) => s.ts < lim);
+  if (!old.length) return;
+  db.stories = db.stories.filter((s) => s.ts >= lim);
+  saveDb();
+  for (const s of old) { try { await storage.delFile(s.image.split('/').pop()); } catch (e) { /* ignore */ } }
+  io.emit('stories:update');
+}
+
+app.get('/api/stories', auth, (req, res) => {
+  if (req.isAdmin) return res.json([]);
+  const lim = Date.now() - STORY_TTL;
+  res.json(
+    db.stories
+      .filter((s) => s.ts >= lim && canSeeStory(req.userId, s))
+      .sort((a, b) => a.ts - b.ts)
+      .map((s) => storyView(s, req.userId))
+  );
+});
+
+app.post('/api/stories', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible pour l\'administrateur.' });
+  const image = String((req.body && req.body.image) || '');
+  if (!IMG_RE.test(image)) return res.status(400).json({ error: 'Image invalide.' });
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 300);
+  const s = { id: uid(), userId: req.userId, image, text, ts: Date.now(), views: {}, likes: [] };
+  db.stories.push(s);
+  saveDb();
+  notifyStory(req.userId);
+  res.json(storyView(s, req.userId));
+});
+
+app.delete('/api/stories/:id', auth, async (req, res) => {
+  const i = db.stories.findIndex((x) => x.id === req.params.id && x.userId === req.userId);
+  if (i === -1) return res.status(404).json({ error: 'Story introuvable.' });
+  const [s] = db.stories.splice(i, 1);
+  saveDb();
+  try { await storage.delFile(s.image.split('/').pop()); } catch (e) { /* ignore */ }
+  notifyStory(req.userId);
+  res.json({ ok: true });
+});
+
+app.post('/api/stories/:id/view', auth, (req, res) => {
+  const s = db.stories.find((x) => x.id === req.params.id);
+  if (!s || !canSeeStory(req.userId, s)) return res.status(404).json({ error: 'Story introuvable.' });
+  if (s.userId !== req.userId && !s.views[req.userId]) {
+    s.views[req.userId] = Date.now();
+    saveDb();
+    io.to(s.userId).emit('stories:update');
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/stories/:id/like', auth, (req, res) => {
+  const s = db.stories.find((x) => x.id === req.params.id);
+  if (!s || !canSeeStory(req.userId, s) || s.userId === req.userId) return res.status(404).json({ error: 'Story introuvable.' });
+  const i = s.likes.indexOf(req.userId);
+  if (i === -1) { s.likes.push(req.userId); s.views[req.userId] = s.views[req.userId] || Date.now(); } else s.likes.splice(i, 1);
+  saveDb();
+  io.to(s.userId).emit('stories:update');
+  res.json({ liked: i === -1, likes: s.likes.length });
+});
+
+/* --------- Appels vocaux (WebRTC, signalisation par socket.io) --------- */
+
+app.get('/api/ice', auth, (req, res) => {
+  const servers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (process.env.TURN_URL) {
+    servers.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USER || '', credential: process.env.TURN_PASS || '' });
+  }
+  res.json(servers);
+});
+
+app.get('/api/calls', auth, (req, res) => {
+  const me = req.userId;
+  res.json(
+    db.calls
+      .filter((c) => c.from === me || c.to === me)
+      .slice(-100)
+      .reverse()
+      .map((c) => {
+        const other = c.from === me ? c.to : c.from;
+        const u = getUser(other);
+        return {
+          id: c.id,
+          other,
+          name: displayName(me, other),
+          avatar: u ? u.avatar || '' : '',
+          outgoing: c.from === me,
+          ts: c.ts,
+          duration: c.duration,
+          status: c.status,
+          callable: !!u && canChat(me, other),
+        };
+      })
+  );
+});
+
+const calls = new Map();   // callId -> appel en cours
+const inCall = new Map();  // userId -> callId
+
+function endCall(callId, reason) {
+  const c = calls.get(callId);
+  if (!c) return;
+  calls.delete(callId);
+  inCall.delete(c.from);
+  inCall.delete(c.to);
+  clearTimeout(c.timer);
+  let status = 'missed';
+  let duration = 0;
+  if (c.answeredAt) { status = 'ended'; duration = Math.round((Date.now() - c.answeredAt) / 1000); }
+  else if (reason === 'declined') status = 'declined';
+  db.calls.push({ id: c.id, from: c.from, to: c.to, ts: c.ts, duration, status });
+  if (db.calls.length > 2000) db.calls = db.calls.slice(-2000);
+  saveDb();
+  io.to(c.from).to(c.to).emit('call:ended', { callId, reason });
+  io.to(c.from).to(c.to).emit('calls:update');
+}
+
 /* --------- Administration --------- */
 
 app.get('/api/admin/users', auth, adminOnly, (req, res) => {
@@ -738,6 +992,8 @@ app.get('/api/admin/users', auth, adminOnly, (req, res) => {
     users: db.users.map((u) => ({
       id: u.id,
       pseudo: u.pseudo,
+      nickname: u.nickname || '',
+      reports: db.reports.filter((r) => r.targetId === u.id).length,
       pin: u.pin,
       shareCode: u.shareCode,
       avatar: u.avatar || '',
@@ -748,28 +1004,97 @@ app.get('/api/admin/users', auth, adminOnly, (req, res) => {
   });
 });
 
-app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
-  const id = req.params.id;
+async function removeUser(id) {
   const idx = db.users.findIndex((u) => u.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (idx === -1) return false;
+  const cid = inCall.get(id);
+  if (cid) endCall(cid, 'offline');
 
-  const images = db.messages.filter((m) => (m.from === id || m.to === id) && m.image).map((m) => m.image.split('/').pop());
+  const files = db.messages.filter((m) => (m.from === id || m.to === id) && m.image).map((m) => m.image.split('/').pop());
+  db.stories.filter((s) => s.userId === id).forEach((s) => files.push(s.image.split('/').pop()));
+
   db.users.splice(idx, 1);
-  db.users.forEach((u) => { u.contacts = u.contacts.filter((c) => c !== id); });
+  db.users.forEach((u) => {
+    u.contacts = u.contacts.filter((c) => c !== id);
+    if (u.aliases) delete u.aliases[id];
+    if (u.addedAt) delete u.addedAt[id];
+  });
   db.messages = db.messages.filter((m) => m.from !== id && m.to !== id);
+  db.stories = db.stories.filter((s) => s.userId !== id);
+  db.stories.forEach((s) => { delete s.views[id]; s.likes = s.likes.filter((x) => x !== id); });
+  db.reports = db.reports.filter((r) => r.targetId !== id);
+  db.calls = db.calls.filter((c) => c.from !== id && c.to !== id);
   for (const t of Object.keys(db.sessions)) {
     if (db.sessions[t].userId === id) delete db.sessions[t];
   }
   saveDb();
   try {
     await storage.removeMessagesFor(id);
-    for (const n of images) await storage.delFile(n);
+    for (const n of files) await storage.delFile(n);
   } catch (e) {
     console.error('Nettoyage :', e.message);
   }
   io.to(id).emit('kicked');
   io.in(id).disconnectSockets(true);
   io.emit('contacts:update');
+  io.emit('stories:update');
+  io.to('admin').emit('reports:update');
+  return true;
+}
+
+app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
+  const ok = await removeUser(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/reports', auth, adminOnly, (req, res) => {
+  const list = db.reports
+    .slice()
+    .sort((a, b) => b.ts - a.ts)
+    .map((r) => {
+      const t = getUser(r.targetId);
+      const p = getUser(r.reporterId);
+      return {
+        id: r.id,
+        reason: r.reason,
+        ts: r.ts,
+        status: r.status,
+        targetId: r.targetId,
+        targetExists: !!t,
+        targetPseudo: t ? t.pseudo : 'Compte supprimé',
+        targetName: t ? (t.nickname ? t.nickname + ' (' + t.pseudo + ')' : t.pseudo) : 'Compte supprimé',
+        reporterName: p ? p.pseudo : 'Compte supprimé',
+        total: db.reports.filter((x) => x.targetId === r.targetId).length,
+        warnings: t ? t.warnings || 0 : 0,
+      };
+    });
+  res.json({ open: db.reports.filter((r) => r.status === 'open').length, reports: list });
+});
+
+app.post('/api/admin/reports/:id/warn', auth, adminOnly, (req, res) => {
+  const r = db.reports.find((x) => x.id === req.params.id);
+  const t = r && getUser(r.targetId);
+  if (!r || !t) return res.status(404).json({ error: 'Signalement ou compte introuvable.' });
+  const text =
+    String((req.body && req.body.text) || '').trim().slice(0, 2000) ||
+    'Attention ' + t.pseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.';
+  t.warnings = (t.warnings || 0) + 1;
+  r.status = 'warned';
+  r.handledAt = Date.now();
+  addMessage('admin', t.id, '⚠️ ' + text);
+  saveDb();
+  io.to('admin').emit('reports:update');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/reports/:id/dismiss', auth, adminOnly, (req, res) => {
+  const r = db.reports.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Signalement introuvable.' });
+  r.status = 'dismissed';
+  r.handledAt = Date.now();
+  saveDb();
+  io.to('admin').emit('reports:update');
   res.json({ ok: true });
 });
 
@@ -801,19 +1126,51 @@ io.on('connection', (socket) => {
     if (!text && !image) return reply({ error: 'Message vide.' });
     if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas écrire à cette personne.' });
 
-    const msg = { id: uid(), from: id, to, text, ts: Date.now() };
-    if (image) msg.image = image;
-    db.messages.push(msg);
-    storage.appendMessage(msg).catch((e) => console.error('Message non enregistré :', e.message));
-    saveDb();
-    io.to(id).to(to).emit('message', msg);
+    addMessage(id, to, text, image);
     reply({ ok: true });
+  });
+
+  socket.on('call:invite', (data, cb) => {
+    const reply = typeof cb === 'function' ? cb : () => {};
+    const to = String((data && data.to) || '');
+    if (id === 'admin' || to === 'admin') return reply({ error: 'Appel impossible avec l\'administrateur.' });
+    if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas appeler cette personne.' });
+    if (!isOnline(to)) return reply({ error: 'Cette personne est hors ligne.' });
+    if (inCall.has(id) || inCall.has(to)) return reply({ error: 'Ligne occupée.' });
+    const c = { id: uid(), from: id, to, ts: Date.now(), answeredAt: 0 };
+    c.timer = setTimeout(() => endCall(c.id, 'missed'), 45000);
+    calls.set(c.id, c);
+    inCall.set(id, c.id);
+    inCall.set(to, c.id);
+    io.to(to).emit('call:incoming', { callId: c.id, from: id, name: displayName(to, id) });
+    reply({ ok: true, callId: c.id });
+  });
+
+  socket.on('call:accept', (data) => {
+    const c = calls.get(data && data.callId);
+    if (!c || c.to !== id || c.answeredAt) return;
+    clearTimeout(c.timer);
+    c.answeredAt = Date.now();
+    io.to(c.from).emit('call:accepted', { callId: c.id });
+  });
+
+  socket.on('call:signal', (data) => {
+    const c = calls.get(data && data.callId);
+    if (!c || (c.from !== id && c.to !== id)) return;
+    io.to(c.from === id ? c.to : c.from).emit('call:signal', { callId: c.id, data: data.data });
+  });
+
+  socket.on('call:end', (data) => {
+    const c = calls.get(data && data.callId);
+    if (!c || (c.from !== id && c.to !== id)) return;
+    endCall(c.id, !c.answeredAt && c.to === id ? 'declined' : 'hangup');
   });
 
   socket.on('disconnect', () => {
     const left = (online.get(id) || 1) - 1;
     if (left <= 0) {
       online.delete(id);
+      if (inCall.has(id)) endCall(inCall.get(id), 'offline');
       io.emit('presence', { id, online: false });
     } else {
       online.set(id, left);
@@ -830,6 +1187,8 @@ async function boot() {
   db = normalizeDb(loaded);
   pruneSessions();
   scheduleSave(); // crée / migre immédiatement les données
+  purgeStories();
+  setInterval(purgeStories, 3600 * 1000);
 
   server.listen(PORT, () => {
     console.log('==============================================');

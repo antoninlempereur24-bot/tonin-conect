@@ -136,8 +136,9 @@
         el.style.background = 'linear-gradient(135deg,#f5a623,#f76b1c)';
         el.textContent = '👑';
       } else {
-        el.style.background = colorFor(user.pseudo || '?');
-        el.textContent = (user.pseudo || '?').trim().charAt(0).toUpperCase();
+        const nm = user.name || user.pseudo || '?';
+        el.style.background = colorFor(nm);
+        el.textContent = nm.trim().charAt(0).toUpperCase();
       }
     };
     if (user.avatar) {
@@ -278,6 +279,7 @@
     renderMe();
     connectSocket();
     await loadContacts();
+    afterStart();
   }
 
   function forceLogout(message) {
@@ -296,10 +298,11 @@
     const holder = $('me-avatar');
     holder.innerHTML = '';
     holder.appendChild(makeAvatar(me));
-    $('me-name').textContent = me.pseudo;
+    $('me-name').textContent = me.name || me.pseudo;
     $('me-sub').textContent = me.isAdmin ? 'Compte administrateur' : 'Connecté';
     $('btn-admin').classList.toggle('hidden', !me.isAdmin);
     $('btn-add').classList.toggle('hidden', !!me.isAdmin);
+    $('btn-reports').classList.toggle('hidden', !me.isAdmin);
   }
 
   /* ---------------- Socket.io ---------------- */
@@ -314,6 +317,7 @@
     });
 
     socket.on('kicked', () => forceLogout('Ton compte a été supprimé par l\'administrateur.'));
+    bindExtraSocket(socket);
 
     socket.on('presence:list', (ids) => {
       state.online = new Set(ids);
@@ -384,13 +388,13 @@
     box.innerHTML = '';
 
     const list = state.contacts
-      .filter((c) => c.pseudo.toLowerCase().includes(q))
+      .filter((c) => (c.name + ' ' + c.pseudo).toLowerCase().includes(q))
       .sort((a, b) => {
         const ta = a.last ? a.last.ts : 0;
         const tb = b.last ? b.last.ts : 0;
         if (ta !== tb) return tb - ta;
         if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
-        return a.pseudo.localeCompare(b.pseudo);
+        return a.name.localeCompare(b.name);
       });
 
     if (!list.length) {
@@ -414,7 +418,7 @@
       const name = document.createElement('div');
       name.className = 'name';
       const nm = document.createElement('span');
-      nm.textContent = c.pseudo + (c.isAdmin ? ' (admin)' : '');
+      nm.textContent = c.name + (c.isAdmin ? ' (admin)' : '');
       name.appendChild(nm);
       if (c.last) {
         const t = document.createElement('time');
@@ -454,7 +458,8 @@
     const holder = $('chat-avatar');
     holder.innerHTML = '';
     holder.appendChild(avatarWithDot(c));
-    $('chat-name').textContent = c.pseudo;
+    $('chat-name').textContent = c.name;
+    $('btn-call').classList.toggle('hidden', !!c.isAdmin || !!state.me.isAdmin);
     $('chat-status').textContent = c.isAdmin
       ? 'Compte administrateur'
       : state.online.has(c.id) ? 'En ligne' : 'Hors ligne';
@@ -626,7 +631,7 @@
     const isAdmin = !!state.me.isAdmin;
     const av = makeAvatar(
       {
-        pseudo: isAdmin ? 'Administrateur' : ($('settings-pseudo').value || state.me.pseudo),
+        pseudo: isAdmin ? 'Administrateur' : ($('settings-nickname').value || state.me.pseudo),
         avatar: state.avatarValue,
         isAdmin,
       },
@@ -658,6 +663,7 @@
     const isAdmin = !!me.isAdmin;
 
     $('field-pseudo').classList.toggle('hidden', isAdmin);
+    $('field-nickname').classList.toggle('hidden', isAdmin);
     $('share-section').classList.toggle('hidden', isAdmin);
 
     const code = $('settings-code');
@@ -675,6 +681,7 @@
       code.placeholder = '••••';
       code.inputMode = 'numeric';
       $('settings-pseudo').value = me.pseudo;
+      $('settings-nickname').value = me.nickname || '';
       $('settings-share').textContent = me.shareCode;
     }
 
@@ -689,7 +696,7 @@
     openModal('modal-settings');
   });
 
-  $('settings-pseudo').addEventListener('input', renderSettingsPreview);
+  $('settings-nickname').addEventListener('input', renderSettingsPreview);
 
   $('settings-code').addEventListener('input', (e) => {
     if (!state.me.isAdmin) e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
@@ -772,7 +779,7 @@
         return;
       }
       body.pin = code;
-      body.pseudo = $('settings-pseudo').value;
+      body.nickname = $('settings-nickname').value;
     }
 
     const saveBtn = $('settings-save');
@@ -819,7 +826,7 @@
     if (!users.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = 7;
+      td.colSpan = 8;
       td.textContent = 'Aucun compte pour le moment.';
       tr.appendChild(td);
       body.appendChild(tr);
@@ -839,7 +846,7 @@
       who.className = 'who';
       who.appendChild(makeAvatar(u));
       const nm = document.createElement('span');
-      nm.textContent = u.pseudo;
+      nm.textContent = u.nickname ? u.nickname + ' (' + u.pseudo + ')' : u.pseudo;
       who.appendChild(nm);
       cell(who);
 
@@ -852,6 +859,7 @@
       cell(share);
 
       cell(String(u.contacts));
+      cell(String(u.reports || 0));
       cell(fmtDate(u.createdAt));
 
       const st = document.createElement('span');
@@ -889,6 +897,588 @@
 
       body.appendChild(tr);
     });
+  }
+
+  /* ---------------- Onglets : Discussions / Stories / Appels ---------------- */
+
+  state.tab = 'chats';
+  state.stories = [];
+  state.viewer = null;
+  state.storyImg = '';
+  state.call = null;
+
+  function showTab(tab) {
+    state.tab = tab;
+    ['chats', 'stories', 'calls'].forEach((t) => {
+      $('pane-' + t).classList.toggle('hidden', t !== tab);
+      document.querySelector('[data-tab="' + t + '"]').classList.toggle('active', t === tab);
+    });
+    if (tab === 'stories') loadStories().catch((e) => toast(e.message));
+    if (tab === 'calls') loadCalls();
+  }
+  document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+  function afterStart() {
+    const admin = !!state.me.isAdmin;
+    $('tabbar').classList.toggle('hidden', admin);
+    showTab('chats');
+    if (admin) refreshReportsBadge(); else loadStories().catch(() => {});
+  }
+
+  const emptyDiv = (text) => {
+    const e = document.createElement('div');
+    e.className = 'empty-list';
+    e.textContent = text;
+    return e;
+  };
+
+  function bindExtraSocket(socket) {
+    socket.on('stories:update', () => {
+      if (state.me && !state.me.isAdmin) loadStories().catch(() => {});
+    });
+    socket.on('calls:update', () => { if (state.tab === 'calls') loadCalls(); });
+    socket.on('reports:update', () => {
+      if (!state.me || !state.me.isAdmin) return;
+      if (!$('modal-reports').classList.contains('hidden')) loadReports(); else refreshReportsBadge();
+    });
+
+    socket.on('call:incoming', ({ callId, from, name }) => {
+      if (state.call) { socket.emit('call:end', { callId }); return; }
+      const c = state.contacts.find((x) => x.id === from) || { id: from, pseudo: name, name };
+      state.call = { id: callId, peerId: from, dir: 'in', stream: null, pc: null, pending: [] };
+      showCall(c, 'Appel entrant…', true);
+    });
+    socket.on('call:accepted', async ({ callId }) => {
+      const call = state.call;
+      if (!call || call.id !== callId) return;
+      try {
+        setCallStatus('Connexion…');
+        const pc = await makePc(call);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('call:signal', { callId, data: { sdp: pc.localDescription } });
+      } catch (e) { toast('Appel impossible.'); hangup(); }
+    });
+    socket.on('call:signal', async ({ callId, data }) => {
+      const call = state.call;
+      if (!call || call.id !== callId || !data) return;
+      const pc = call.pc;
+      try {
+        if (data.candidate) {
+          if (pc && pc.remoteDescription) await pc.addIceCandidate(data.candidate).catch(() => {});
+          else call.pending.push(data.candidate);
+        } else if (data.sdp && pc) {
+          await pc.setRemoteDescription(data.sdp);
+          for (const cand of call.pending.splice(0)) await pc.addIceCandidate(cand).catch(() => {});
+          if (data.sdp.type === 'offer') {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('call:signal', { callId, data: { sdp: pc.localDescription } });
+          }
+        }
+      } catch (e) { /* ignore */ }
+    });
+    socket.on('call:ended', ({ callId, reason }) => {
+      const call = state.call;
+      if (!call || call.id !== callId) return;
+      const msgs = { declined: 'Appel refusé.', offline: 'Ton correspondant s\'est déconnecté.', missed: 'Appel manqué.', hangup: 'Appel terminé.' };
+      cleanupCall();
+      toast(msgs[reason] || 'Appel terminé.');
+    });
+  }
+
+  /* ---------------- Profil du contact ---------------- */
+
+  function openProfile() {
+    const c = state.contacts.find((x) => x.id === state.current);
+    if (!c) return;
+    const av = $('profile-avatar');
+    av.innerHTML = '';
+    av.appendChild(makeAvatar(c, true));
+    $('profile-name').textContent = c.name;
+    $('profile-pseudo').textContent = c.pseudo;
+    $('profile-nick').textContent = c.nickname || '—';
+    $('profile-code').textContent = !c.isAdmin && c.shareCode ? c.shareCode : '—';
+    $('profile-since').textContent = c.since ? fmtDate(c.since) : '—';
+    $('profile-alias').value = c.alias || '';
+    $('profile-actions').classList.toggle('hidden', !!c.isAdmin || !!state.me.isAdmin);
+    openModal('modal-profile');
+  }
+  $('chat-id').addEventListener('click', openProfile);
+
+  $('profile-alias-save').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/contacts/' + state.current + '/alias', 'PUT', { alias: $('profile-alias').value });
+      await loadContacts();
+      openProfile();
+      toast(r.alias ? 'Surnom enregistré.' : 'Surnom retiré.');
+    } catch (err) { toast(err.message); }
+  });
+
+  $('profile-delete').addEventListener('click', async () => {
+    const c = state.contacts.find((x) => x.id === state.current);
+    if (!c || !confirm('Supprimer « ' + c.name + ' » de tes contacts ?')) return;
+    try {
+      await api('/api/contacts/' + c.id, 'DELETE');
+      closeModal('modal-profile');
+      $('btn-back').click();
+      delete state.cache[c.id];
+      await loadContacts();
+      toast('Contact supprimé.');
+    } catch (err) { toast(err.message); }
+  });
+
+  $('profile-report').addEventListener('click', () => {
+    $('report-reason').value = '';
+    $('report-error').textContent = '';
+    closeModal('modal-profile');
+    openModal('modal-report');
+    $('report-reason').focus();
+  });
+
+  $('report-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('report-error').textContent = '';
+    try {
+      await api('/api/contacts/' + state.current + '/report', 'POST', { reason: $('report-reason').value });
+      closeModal('modal-report');
+      toast('Signalement envoyé à l\'administrateur.');
+    } catch (err) { $('report-error').textContent = err.message; }
+  });
+
+  /* ---------------- Stories ---------------- */
+
+  async function loadStories() {
+    state.stories = await api('/api/stories');
+    renderStories();
+    updateStoriesDot();
+    refreshViewer();
+  }
+
+  function groupStories() {
+    const g = {};
+    state.stories.forEach((s) => { (g[s.userId] = g[s.userId] || []).push(s); });
+    return g;
+  }
+
+  function updateStoriesDot() {
+    $('stories-dot').classList.toggle('hidden', !state.stories.some((s) => !s.seen));
+  }
+
+  function storyUser(userId, fallbackName) {
+    if (state.me && userId === state.me.id) return { pseudo: state.me.pseudo, name: state.me.name || state.me.pseudo, avatar: state.me.avatar };
+    const c = state.contacts.find((x) => x.id === userId);
+    return c || { pseudo: fallbackName, name: fallbackName, avatar: '' };
+  }
+
+  function storyRow(user, title, sub, seen, onClick, extra) {
+    const item = document.createElement('div');
+    item.className = 'contact';
+    const ring = document.createElement('div');
+    ring.className = 'ring' + (seen ? ' seen' : '');
+    ring.appendChild(makeAvatar(user));
+    item.appendChild(ring);
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const n = document.createElement('div');
+    n.className = 'name';
+    n.textContent = title;
+    const p = document.createElement('div');
+    p.className = 'preview';
+    p.textContent = sub;
+    meta.appendChild(n);
+    meta.appendChild(p);
+    item.appendChild(meta);
+    if (extra) item.appendChild(extra);
+    item.addEventListener('click', onClick);
+    return item;
+  }
+
+  function renderStories() {
+    const box = $('stories-list');
+    box.innerHTML = '';
+    const g = groupStories();
+    const mine = g[state.me.id] || [];
+
+    const add = document.createElement('button');
+    add.className = 'btn small primary';
+    add.textContent = '＋ Ajouter';
+    add.addEventListener('click', (e) => { e.stopPropagation(); openNewStory(); });
+    box.appendChild(
+      storyRow(
+        storyUser(state.me.id), 'Ma story',
+        mine.length ? mine.length + ' story' + (mine.length > 1 ? 's' : '') + ' · ' + fmtTime(mine[mine.length - 1].ts) : 'Partage une photo avec tes amis',
+        true,
+        () => (mine.length ? openViewer(state.me.id, 0) : openNewStory()),
+        add
+      )
+    );
+
+    const lab = document.createElement('div');
+    lab.className = 'section-label';
+    lab.textContent = 'Stories de tes amis';
+    box.appendChild(lab);
+
+    const others = Object.keys(g).filter((id) => id !== state.me.id).map((id) => g[id])
+      .sort((a, b) => b[b.length - 1].ts - a[a.length - 1].ts);
+    if (!others.length) box.appendChild(emptyDiv('Aucune story pour le moment.'));
+    others.forEach((list) => {
+      const first = list.findIndex((s) => !s.seen);
+      const last = list[list.length - 1];
+      const u = storyUser(last.userId, last.authorName);
+      box.appendChild(
+        storyRow(u, u.name, list.length + ' story' + (list.length > 1 ? 's' : '') + ' · ' + fmtTime(last.ts), first === -1,
+          () => openViewer(last.userId, first === -1 ? 0 : first))
+      );
+    });
+  }
+
+  function openNewStory() {
+    state.storyImg = '';
+    $('story-preview').classList.add('hidden');
+    $('story-text').value = '';
+    $('story-error').textContent = '';
+    openModal('modal-story-new');
+  }
+
+  async function pickStoryFile(e) {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const img = await readImage(f);
+      state.storyImg = renderToDataUrl(img, { max: 1280, quality: 0.82 });
+      $('story-preview').src = state.storyImg;
+      $('story-preview').classList.remove('hidden');
+      $('story-error').textContent = '';
+    } catch (err) { $('story-error').textContent = err.message; }
+  }
+  $('story-cam').addEventListener('change', pickStoryFile);
+  $('story-file').addEventListener('change', pickStoryFile);
+
+  $('story-publish').addEventListener('click', async () => {
+    if (!state.storyImg) { $('story-error').textContent = 'Prends ou choisis d\'abord une photo.'; return; }
+    const btn = $('story-publish');
+    btn.disabled = true;
+    try {
+      const { url } = await api('/api/upload', 'POST', { data: state.storyImg });
+      await api('/api/stories', 'POST', { image: url, text: $('story-text').value });
+      closeModal('modal-story-new');
+      toast('Story publiée !');
+      await loadStories();
+    } catch (err) { $('story-error').textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
+
+  function curStory() {
+    const v = state.viewer;
+    if (!v) return null;
+    return (groupStories()[v.userId] || [])[v.index] || null;
+  }
+
+  function openViewer(userId, index) {
+    if (!(groupStories()[userId] || []).length) return;
+    state.viewer = { userId, index, storyId: null };
+    $('story-viewers').classList.add('hidden');
+    showStory();
+    openModal('modal-story');
+  }
+
+  function showStory() {
+    const s = curStory();
+    if (!s) return closeModal('modal-story');
+    const list = groupStories()[s.userId];
+    state.viewer.storyId = s.id;
+    $('story-img').src = s.image;
+    $('story-caption').textContent = s.text;
+    $('story-caption').classList.toggle('hidden', !s.text);
+    $('story-author').textContent = (s.mine ? 'Ma story' : storyUser(s.userId, s.authorName).name) + ' (' + (state.viewer.index + 1) + '/' + list.length + ')';
+    $('story-time').textContent = fmtDay(s.ts) + ' ' + fmtTime(s.ts);
+    $('story-delete').classList.toggle('hidden', !s.mine);
+    $('story-viewers-btn').classList.toggle('hidden', !s.mine);
+    $('story-views').textContent = s.viewsCount;
+    $('story-like').textContent = (s.liked ? '❤️ ' : '🤍 ') + s.likes;
+    $('story-like').disabled = !!s.mine;
+    $('story-prev').disabled = state.viewer.index === 0;
+
+    const vb = $('story-viewers');
+    vb.innerHTML = '';
+    if (s.mine) {
+      if (!s.viewers.length) vb.textContent = 'Personne n\'a encore vu cette story.';
+      s.viewers.forEach((v) => {
+        const line = document.createElement('div');
+        line.textContent = '👁 ' + v.name + ' · ' + fmtTime(v.ts) + (v.liked ? ' · ❤️' : '');
+        vb.appendChild(line);
+      });
+    }
+    if (!s.mine && !s.seen) {
+      s.seen = true;
+      api('/api/stories/' + s.id + '/view', 'POST').catch(() => {});
+      updateStoriesDot();
+      renderStories();
+    }
+  }
+
+  function refreshViewer() {
+    if ($('modal-story').classList.contains('hidden') || !state.viewer) return;
+    const list = groupStories()[state.viewer.userId] || [];
+    const i = list.findIndex((s) => s.id === state.viewer.storyId);
+    if (i === -1) return closeModal('modal-story');
+    state.viewer.index = i;
+    showStory();
+  }
+
+  $('story-prev').addEventListener('click', () => { if (state.viewer.index > 0) { state.viewer.index--; showStory(); } });
+  $('story-next').addEventListener('click', () => {
+    const list = groupStories()[state.viewer.userId] || [];
+    if (state.viewer.index < list.length - 1) { state.viewer.index++; showStory(); } else closeModal('modal-story');
+  });
+  $('story-viewers-btn').addEventListener('click', () => $('story-viewers').classList.toggle('hidden'));
+  $('story-like').addEventListener('click', async () => {
+    const s = curStory();
+    if (!s || s.mine) return;
+    try {
+      const r = await api('/api/stories/' + s.id + '/like', 'POST');
+      s.liked = r.liked;
+      s.likes = r.likes;
+      showStory();
+    } catch (err) { toast(err.message); }
+  });
+  $('story-delete').addEventListener('click', async () => {
+    const s = curStory();
+    if (!s || !confirm('Supprimer cette story ?')) return;
+    try {
+      await api('/api/stories/' + s.id, 'DELETE');
+      toast('Story supprimée.');
+      await loadStories();
+    } catch (err) { toast(err.message); }
+  });
+
+  /* ---------------- Appels vocaux ---------------- */
+
+  const fmtDur = (s) => Math.floor(s / 60) + ' min ' + String(s % 60).padStart(2, '0') + ' s';
+
+  async function loadCalls() {
+    let list;
+    try { list = await api('/api/calls'); } catch (e) { return; }
+    const box = $('calls-list');
+    box.innerHTML = '';
+    if (!list.length) { box.appendChild(emptyDiv('Aucun appel pour le moment.')); return; }
+    list.forEach((r) => {
+      const item = document.createElement('div');
+      item.className = 'contact';
+      item.appendChild(makeAvatar({ pseudo: r.name, name: r.name, avatar: r.avatar }));
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const n = document.createElement('div');
+      n.className = 'name';
+      n.textContent = r.name;
+      const bad = !r.outgoing && r.status !== 'ended';
+      if (bad) n.style.color = 'var(--danger)';
+      const p = document.createElement('div');
+      p.className = 'preview';
+      let label;
+      if (r.outgoing) label = r.status === 'ended' ? '↗ Sortant' : r.status === 'declined' ? '↗ Refusé' : '↗ Sans réponse';
+      else label = r.status === 'ended' ? '↙ Reçu' : r.status === 'declined' ? '↙ Refusé' : '↙ Manqué';
+      p.textContent = label + ' · ' + fmtDay(r.ts) + ' ' + fmtTime(r.ts) + (r.duration ? ' · ' + fmtDur(r.duration) : '');
+      meta.appendChild(n);
+      meta.appendChild(p);
+      item.appendChild(meta);
+      if (r.callable) {
+        const b = document.createElement('button');
+        b.className = 'icon-btn';
+        b.textContent = '📞';
+        b.title = 'Rappeler';
+        b.addEventListener('click', () => startCall(r.other));
+        item.appendChild(b);
+      }
+      box.appendChild(item);
+    });
+  }
+
+  function setCallStatus(t) { $('call-status').textContent = t; }
+
+  function showCall(c, status, incoming) {
+    const av = $('call-avatar');
+    av.innerHTML = '';
+    av.appendChild(makeAvatar(c, true));
+    $('call-name').textContent = c.name || c.pseudo;
+    setCallStatus(status);
+    $('call-accept').classList.toggle('hidden', !incoming);
+    $('call-overlay').classList.remove('hidden');
+  }
+
+  function cleanupCall() {
+    const c = state.call;
+    if (c) {
+      clearInterval(c.timer);
+      if (c.pc) { try { c.pc.close(); } catch (e) { /* ignore */ } }
+      if (c.stream) c.stream.getTracks().forEach((t) => t.stop());
+    }
+    state.call = null;
+    $('call-audio').srcObject = null;
+    $('call-overlay').classList.add('hidden');
+    if (state.tab === 'calls') loadCalls();
+  }
+
+  function hangup() {
+    const c = state.call;
+    if (!c) return;
+    state.socket.emit('call:end', { callId: c.id });
+    cleanupCall();
+  }
+
+  function callConnected() {
+    const c = state.call;
+    if (!c || c.startedAt) return;
+    c.startedAt = Date.now();
+    const tick = () => setCallStatus('En communication · ' + fmtDur(Math.round((Date.now() - c.startedAt) / 1000)));
+    tick();
+    c.timer = setInterval(tick, 1000);
+  }
+
+  async function makePc(call) {
+    let servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try { servers = await api('/api/ice'); } catch (e) { /* STUN par défaut */ }
+    const pc = new RTCPeerConnection({ iceServers: servers });
+    call.pc = pc;
+    call.stream.getTracks().forEach((t) => pc.addTrack(t, call.stream));
+    pc.onicecandidate = (e) => {
+      if (e.candidate) state.socket.emit('call:signal', { callId: call.id, data: { candidate: e.candidate } });
+    };
+    pc.ontrack = (e) => {
+      const a = $('call-audio');
+      a.srcObject = e.streams[0];
+      a.play().catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') callConnected();
+      if (pc.connectionState === 'failed') { toast('Connexion perdue.'); hangup(); }
+    };
+    return pc;
+  }
+
+  async function getMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast('Micro indisponible (il faut une connexion HTTPS).');
+      return null;
+    }
+    try { return await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { toast('Autorise le micro pour pouvoir appeler.'); return null; }
+  }
+
+  async function startCall(id) {
+    if (state.call) return toast('Un appel est déjà en cours.');
+    const c = state.contacts.find((x) => x.id === id);
+    if (!c || c.isAdmin || state.me.isAdmin) return;
+    const stream = await getMic();
+    if (!stream) return;
+    state.socket.emit('call:invite', { to: id }, (res) => {
+      if (!res || res.error) {
+        stream.getTracks().forEach((t) => t.stop());
+        return toast((res && res.error) || 'Appel impossible.');
+      }
+      state.call = { id: res.callId, peerId: id, dir: 'out', stream, pc: null, pending: [] };
+      showCall(c, 'Appel en cours…', false);
+    });
+  }
+
+  $('btn-call').addEventListener('click', () => startCall(state.current));
+  $('call-hangup').addEventListener('click', hangup);
+  $('call-accept').addEventListener('click', async () => {
+    const call = state.call;
+    if (!call) return;
+    const stream = await getMic();
+    if (!stream) return hangup();
+    call.stream = stream;
+    $('call-accept').classList.add('hidden');
+    setCallStatus('Connexion…');
+    try {
+      await makePc(call);
+      state.socket.emit('call:accept', { callId: call.id });
+    } catch (e) { toast('Appel impossible.'); hangup(); }
+  });
+
+  /* ---------------- Signalements (administrateur) ---------------- */
+
+  function setReportsBadge(n) {
+    const b = $('reports-badge');
+    b.textContent = n;
+    b.classList.toggle('hidden', !n);
+  }
+
+  async function refreshReportsBadge() {
+    try {
+      const d = await api('/api/admin/reports');
+      setReportsBadge(d.open);
+      return d;
+    } catch (e) { return null; }
+  }
+
+  $('btn-reports').addEventListener('click', () => { openModal('modal-reports'); loadReports(); });
+
+  async function loadReports() {
+    const d = await refreshReportsBadge();
+    if (!d) return;
+    const box = $('reports-list');
+    box.innerHTML = '';
+    const open = d.reports.filter((r) => r.status === 'open');
+    const done = d.reports.filter((r) => r.status !== 'open');
+    if (!open.length) box.appendChild(emptyDiv('Aucun signalement en attente.'));
+
+    open.forEach((r) => {
+      const card = document.createElement('div');
+      card.className = 'report-card';
+      const h = document.createElement('strong');
+      h.textContent = r.targetName + ' a été signalé(e) par ' + r.reporterName;
+      const p = document.createElement('p');
+      p.textContent = '« ' + r.reason + ' »';
+      const m = document.createElement('small');
+      m.textContent = fmtDay(r.ts) + ' ' + fmtTime(r.ts) + ' · ' + r.total + ' signalement(s) au total · ' + r.warnings + ' avertissement(s) déjà envoyé(s)';
+      const row = document.createElement('div');
+      row.className = 'row';
+
+      const mk = (label, cls, fn) => {
+        const b = document.createElement('button');
+        b.className = 'btn small ' + cls;
+        b.textContent = label;
+        b.addEventListener('click', fn);
+        row.appendChild(b);
+        return b;
+      };
+      const act = async (fn, okMsg) => {
+        try { await fn(); toast(okMsg); await loadReports(); } catch (err) { toast(err.message); }
+      };
+
+      const warn = mk('⚠️ Avertir', 'primary', () => {
+        const def = 'Attention ' + r.targetPseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.';
+        const text = prompt('Avertissement envoyé à ' + r.targetPseudo + ' (tu peux le modifier) :', def);
+        if (text === null) return;
+        act(() => api('/api/admin/reports/' + r.id + '/warn', 'POST', { text }), 'Avertissement envoyé.');
+      });
+      mk('🙈 Ne rien faire', '', () => act(() => api('/api/admin/reports/' + r.id + '/dismiss', 'POST'), 'Signalement classé.'));
+      const del = mk('🗑 Supprimer le compte', 'danger', () => {
+        if (!confirm('Supprimer définitivement le compte « ' + r.targetPseudo + ' » et ses messages ?')) return;
+        act(() => api('/api/admin/users/' + r.targetId, 'DELETE'), 'Compte supprimé.');
+      });
+      if (!r.targetExists) { warn.disabled = true; del.disabled = true; }
+
+      [h, p, m, row].forEach((x) => card.appendChild(x));
+      box.appendChild(card);
+    });
+
+    if (done.length) {
+      const lab = document.createElement('div');
+      lab.className = 'section-label';
+      lab.textContent = 'Déjà traités';
+      box.appendChild(lab);
+      done.slice(0, 30).forEach((r) => {
+        const line = document.createElement('div');
+        line.className = 'report-done';
+        line.textContent = (r.status === 'warned' ? '⚠️ Avertissement envoyé' : '✔ Classé sans suite') + ' · ' + r.targetName + ' (par ' + r.reporterName + ') · ' + fmtDate(r.ts);
+        box.appendChild(line);
+      });
+    }
   }
 
   /* ---------------- Démarrage ---------------- */
