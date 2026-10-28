@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tonin Conect</title>
+
+  <!-- Icône de l'application (onglet navigateur, écran d'accueil iPhone / Samsung) -->
+  <link rel="icon" type="image/png" href="/icon.png?v=2" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0f1220" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Tonin Conect" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <!-- ====================== CONNEXION ====================== -->
+  <section id="auth-screen" class="screen">
+    <div class="auth-card">
+      <div class="logo"><img src="/icon.png?v=2" alt="Tonin Conect" onerror="this.replaceWith('💬')" /></div>
+      <h1>Tonin Conect</h1>
+      <p class="tagline">La messagerie simple et instantanée</p>
+
+      <form id="login-form" autocomplete="off">
+        <label>Pseudo
+          <input id="login-pseudo" type="text" maxlength="20" required placeholder="Ton pseudo" />
+        </label>
+        <label>Code PIN secret (4 chiffres)
+          <input id="login-pin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" required placeholder="••••" />
+        </label>
+        <button class="btn primary" type="submit">Se connecter / Créer mon compte</button>
+        <p class="hint">Si le pseudo existe avec ce PIN, tu te connectes. Sinon, le compte est créé automatiquement.</p>
+      </form>
+
+      <form id="admin-form" class="hidden" autocomplete="off">
+        <label>Code administrateur
+          <input id="admin-pin" type="password" maxlength="40" required placeholder="Code administrateur" />
+        </label>
+        <button class="btn primary" type="submit">Entrer</button>
+      </form>
+
+      <p id="auth-error" class="error"></p>
+      <button id="toggle-admin" class="link-btn" type="button">Compte administrateur</button>
+    </div>
+  </section>
+
+  <!-- ====================== APPLICATION ====================== -->
+  <section id="app-screen" class="screen hidden">
+
+    <aside id="sidebar">
+      <header class="side-head">
+        <div id="me-avatar"></div>
+        <div class="me-info">
+          <strong id="me-name"></strong>
+          <small id="me-sub"></small>
+        </div>
+        <div class="side-actions">
+          <button id="btn-admin" class="icon-btn hidden" title="Administration">🛠️<span id="reports-badge" class="badge hidden">0</span></button>
+          <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
+          <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
+        </div>
+      </header>
+
+      <div id="pane-chats" class="pane">
+        <div class="side-tools">
+          <input id="search" type="search" placeholder="Rechercher un contact…" />
+          <button id="btn-add" class="btn small primary" title="Ajouter un contact">＋ Ajouter</button>
+        </div>
+        <div id="contact-list"></div>
+      </div>
+
+      <div id="pane-stories" class="pane hidden">
+        <div id="stories-list" class="list-scroll"></div>
+      </div>
+
+      <div id="pane-channels" class="pane hidden">
+        <div class="side-tools">
+          <button id="btn-chan-new" class="btn small primary" type="button">＋ Créer</button>
+          <button id="btn-chan-reco" class="btn small" type="button">✨ Recommandations</button>
+        </div>
+        <div id="channels-list" class="list-scroll"></div>
+      </div>
+
+      <div id="pane-calls" class="pane hidden">
+        <div id="calls-list" class="list-scroll"></div>
+      </div>
+
+      <nav id="tabbar">
+        <button data-tab="chats" class="active"><span class="ico">💬</span>Discussions</button>
+        <button data-tab="stories"><span class="ico">📸</span>Stories<i id="stories-dot" class="tab-count hidden"></i></button>
+        <button data-tab="channels"><span class="ico">📢</span>Chaînes</button>
+        <button data-tab="calls"><span class="ico">📞</span>Appels</button>
+      </nav>
+    </aside>
+
+    <main id="chat">
+      <div id="chat-empty">
+        <div class="logo big"><img src="/icon.png?v=2" alt="" onerror="this.replaceWith('💬')" /></div>
+        <h2>Tonin Conect</h2>
+        <p>Choisis un contact pour commencer à discuter.</p>
+      </div>
+
+      <div id="chat-panel" class="hidden">
+        <header class="chat-head">
+          <button id="btn-back" class="icon-btn" title="Retour">←</button>
+          <div id="chat-id" class="chat-id" title="Voir le profil">
+            <div id="chat-avatar"></div>
+            <div class="me-info">
+              <strong id="chat-name"></strong>
+              <small id="chat-status"></small>
+            </div>
+          </div>
+          <button id="btn-call" class="icon-btn" title="Appel vocal">📞</button>
+          <button id="btn-video" class="icon-btn" title="Appel vidéo">🎥</button>
+        </header>
+        <div id="messages"></div>
+        <form id="send-form" autocomplete="off">
+          <button id="btn-photo" class="icon-btn" type="button" title="Envoyer une photo">📷</button>
+          <input id="photo-input" type="file" accept="image/*" hidden />
+          <input id="msg-input" type="text" maxlength="2000" placeholder="Écris un message…" />
+          <span id="rec-timer" class="rec-timer hidden"></span>
+          <button id="btn-mic-cancel" class="icon-btn hidden" type="button" title="Annuler le vocal">🗑</button>
+          <button id="btn-mic" class="icon-btn" type="button" title="Message vocal">🎤</button>
+          <button class="btn primary" type="submit">Envoyer</button>
+        </form>
+      </div>
+    </main>
+  </section>
+
+  <!-- ====================== MODALE : RÉGLAGES ====================== -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>Réglages</h2>
+
+      <h3 class="section-title">Profil</h3>
+      <div class="profile-photo">
+        <div id="settings-preview"></div>
+        <div class="photo-fields">
+          <label>Photo de profil (URL d'image)
+            <input id="settings-avatar-url" type="url" placeholder="https://…" />
+          </label>
+          <div class="row">
+            <label class="btn small file-btn">📁 Importer une photo
+              <input id="settings-avatar-file" type="file" accept="image/*" hidden />
+            </label>
+            <button id="settings-avatar-clear" class="btn small" type="button">Retirer</button>
+          </div>
+        </div>
+      </div>
+
+      <label id="field-pseudo">Nom d'utilisateur (choisi à l'inscription, non modifiable)
+        <input id="settings-pseudo" type="text" maxlength="20" disabled />
+      </label>
+      <label id="field-nickname">Surnom (affiché à tes contacts)
+        <input id="settings-nickname" type="text" maxlength="20" placeholder="Ex : Juju" />
+      </label>
+      <label id="field-desc" class="hidden">Description de ton profil (visible par tous les utilisateurs)
+        <input id="settings-desc" type="text" maxlength="300" placeholder="Ex : Je suis là pour t'aider si tu as des questions." />
+      </label>
+
+      <h3 class="section-title">Sécurité</h3>
+      <label><span id="code-label">Code secret (PIN à 4 chiffres)</span>
+        <div class="row">
+          <input id="settings-code" type="password" autocomplete="new-password" />
+          <button id="settings-code-toggle" class="btn small" type="button">👁</button>
+        </div>
+      </label>
+
+      <div id="share-section">
+        <div class="share-box">
+          <small>Ton code de partage (donne-le à un ami pour qu'il t'ajoute)</small>
+          <div class="row">
+            <strong id="settings-share" class="share-code">----</strong>
+            <button id="settings-share-copy" class="btn small" type="button">Copier</button>
+          </div>
+          <button id="settings-share-reset" class="btn small danger" type="button">🔄 Réinitialiser le code de partage</button>
+        </div>
+      </div>
+
+      <h3 class="section-title">Apparence</h3>
+      <div class="theme-row">
+        <button class="btn theme-btn" type="button" data-theme-choice="dark">🌙 Sombre</button>
+        <button class="btn theme-btn" type="button" data-theme-choice="light">☀️ Clair</button>
+      </div>
+      <small class="hint-line">Couleur de l'application</small>
+      <div id="accent-row" class="accent-row"></div>
+
+      <p id="settings-error" class="error"></p>
+      <button id="settings-save" class="btn primary" type="button">Enregistrer</button>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : MENU AJOUTER ====================== -->
+  <div id="modal-addmenu" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>Ajouter</h2>
+      <button id="menu-add-contact" class="btn hub-item" type="button"><span>👤 Ajouter un contact</span></button>
+      <button id="menu-add-group" class="btn hub-item" type="button"><span>👥 Créer un groupe</span></button>
+    </div>
+  </div>
+
+  <div id="modal-group-new" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>👥 Créer un groupe</h2>
+      <label>Nom du groupe
+        <input id="group-new-name" type="text" maxlength="30" placeholder="Ex : Les potes" />
+      </label>
+      <small class="hint-line">Choisis les membres parmi tes contacts (7 maximum)</small>
+      <div id="group-new-members" class="group-pick"></div>
+      <p id="group-new-error" class="error"></p>
+      <button id="group-new-create" class="btn primary" type="button">Créer le groupe</button>
+    </div>
+  </div>
+
+  <div id="modal-group" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <div class="profile-head">
+        <div id="group-avatar"></div>
+        <h2 id="group-name"></h2>
+        <small id="group-count" class="hint"></small>
+      </div>
+      <div id="group-members" class="group-pick"></div>
+      <button id="group-leave" class="btn danger" type="button" style="width:100%;margin-top:12px">🚪 Quitter le groupe</button>
+      <button id="group-delete" class="btn danger hidden" type="button" style="width:100%;margin-top:8px">🗑 Supprimer le groupe</button>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : AJOUT CONTACT ====================== -->
+  <div id="modal-add" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>Ajouter un contact</h2>
+      <form id="add-form" autocomplete="off">
+        <label>Code de partage de ton ami
+          <input id="add-code" type="text" inputmode="numeric" pattern="\d{4}" maxlength="4" required placeholder="ex : 5694" />
+        </label>
+        <p id="add-error" class="error"></p>
+        <button class="btn primary" type="submit">Ajouter</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : ADMINISTRATEUR ====================== -->
+  <div id="modal-admin" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>👥 Comptes</h2>
+      <p class="hint"><span id="admin-count">0</span> compte(s) créé(s). Clique sur « Discuter » pour écrire à quelqu'un.</p>
+      <p id="admin-storage" class="storage-info"></p>
+      <div class="table-wrap">
+        <table id="admin-table">
+          <thead>
+            <tr>
+              <th>Nom</th>
+              <th>Code secret</th>
+              <th>Code de partage</th>
+              <th>Contacts</th>
+              <th>Signalements</th>
+              <th>Créé le</th>
+              <th>Statut</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button id="admin-refresh" class="btn small" type="button">↻ Actualiser</button>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : PROFIL DU CONTACT ====================== -->
+  <div id="modal-profile" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <div class="profile-head">
+        <div id="profile-avatar"></div>
+        <h2 id="profile-name"></h2>
+      </div>
+      <p id="profile-desc" class="profile-desc hidden"></p>
+      <dl class="profile-info" id="profile-dl">
+        <dt>Nom d'utilisateur</dt><dd id="profile-pseudo"></dd>
+        <dt>Surnom public</dt><dd id="profile-nick"></dd>
+        <dt>Code de parrainage</dt><dd id="profile-code"></dd>
+        <dt>Parrainé le</dt><dd id="profile-since"></dd>
+      </dl>
+      <div id="profile-actions">
+        <label>Ton surnom pour ce contact
+          <div class="row">
+            <input id="profile-alias" type="text" maxlength="20" placeholder="Ex : Juju" />
+            <button id="profile-alias-save" class="btn small" type="button">OK</button>
+          </div>
+        </label>
+        <button id="profile-report" class="btn danger" type="button">🚩 Signaler</button>
+        <button id="profile-delete" class="btn danger" type="button">🗑 Supprimer le contact</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : SIGNALER ====================== -->
+  <div id="modal-report" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🚩 Signaler</h2>
+      <form id="report-form" autocomplete="off">
+        <label>Pourquoi signales-tu cette personne ?
+          <input id="report-reason" type="text" maxlength="300" required placeholder="Ex : insultes, harcèlement…" />
+        </label>
+        <p id="report-error" class="error"></p>
+        <button class="btn primary" type="submit">Envoyer le signalement</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : SIGNALEMENTS (ADMIN) ====================== -->
+  <div id="modal-reports" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>⚠️ Signalements</h2>
+      <div id="reports-list"></div>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : NOUVELLE STORY ====================== -->
+  <div id="modal-story-new" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>Ma story</h2>
+      <img id="story-preview" class="story-preview hidden" alt="Aperçu" />
+      <div class="row wrap">
+        <label class="btn small file-btn">📷 Prendre une photo
+          <input id="story-cam" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="btn small file-btn">🖼 Choisir un fichier
+          <input id="story-file" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <label style="margin-top:14px">Texte sous la photo (facultatif)
+        <input id="story-text" type="text" maxlength="300" placeholder="Écris quelque chose…" />
+      </label>
+      <p id="story-error" class="error"></p>
+      <button id="story-publish" class="btn primary" type="button">Publier</button>
+    </div>
+  </div>
+
+  <!-- ====================== VISIONNEUSE DE STORY ====================== -->
+  <div id="modal-story" class="modal lightbox hidden">
+    <button class="modal-close" data-close>✕</button>
+    <div class="story-box">
+      <div class="story-top">
+        <span id="story-author"></span>
+        <small id="story-time"></small>
+        <button id="story-delete" class="icon-btn hidden" title="Supprimer ma story">🗑</button>
+      </div>
+      <img id="story-img" alt="Story" />
+      <p id="story-caption"></p>
+      <div class="story-bar">
+        <button id="story-prev" class="btn small" type="button">‹</button>
+        <button id="story-like" class="btn small" type="button">🤍 0</button>
+        <button id="story-viewers-btn" class="btn small hidden" type="button">👁 <span id="story-views">0</span></button>
+        <button id="story-next" class="btn small" type="button">›</button>
+      </div>
+      <div id="story-viewers" class="story-viewers hidden"></div>
+    </div>
+  </div>
+
+  <!-- ====================== APPEL EN COURS ====================== -->
+  <div id="call-overlay" class="call-overlay hidden">
+    <div class="call-box call-stage">
+      <h2 id="call-name"></h2>
+      <p id="call-status"></p>
+      <div id="call-grid" class="call-grid"></div>
+      <div class="call-actions">
+        <button id="call-accept" class="call-btn ok hidden" type="button" title="Décrocher (voix)">📞</button>
+        <button id="call-accept-video" class="call-btn ok hidden" type="button" title="Décrocher en vidéo">🎥</button>
+        <button id="call-mic" class="call-btn neutral hidden" type="button" title="Micro">🎙️</button>
+        <button id="call-cam" class="call-btn neutral hidden" type="button" title="Caméra">📷</button>
+        <button id="call-hangup" class="call-btn bad" type="button" title="Raccrocher">📵</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================== CHAÎNES ====================== -->
+  <div id="modal-chan-reco" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>✨ Recommandations</h2>
+      <p class="hint">Les chaînes sont classées de la plus suivie à la moins suivie.</p>
+      <div id="reco-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-channel" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <div class="chan-head">
+        <div id="chan-avatar"></div>
+        <div class="chan-meta">
+          <h2 id="chan-name"></h2>
+          <small id="chan-subs"></small>
+        </div>
+      </div>
+      <p id="chan-desc" class="hint"></p>
+      <div class="chan-actions">
+        <button id="chan-follow" class="btn small primary" type="button"></button>
+        <button id="chan-edit" class="btn small hidden" type="button">✏️ Modifier</button>
+        <button id="chan-delete" class="btn small danger hidden" type="button">🗑 Supprimer</button>
+      </div>
+      <div id="chan-posts" class="chan-posts"></div>
+      <form id="chan-compose" class="chan-compose hidden" autocomplete="off">
+        <button id="chan-photo-btn" class="icon-btn" type="button" title="Photo">📷</button>
+        <input id="chan-photo" type="file" accept="image/*" hidden />
+        <button id="chan-video-btn" class="icon-btn" type="button" title="Vidéo">🎬</button>
+        <input id="chan-video" type="file" accept="video/mp4,video/webm,video/quicktime" hidden />
+        <input id="chan-text" type="text" maxlength="2000" placeholder="Écrire dans la chaîne…" />
+        <button class="btn primary" type="submit">Publier</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="modal-chan-edit" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2 id="chan-edit-title">Créer une chaîne</h2>
+      <div class="profile-photo">
+        <div id="chan-edit-preview"></div>
+        <div class="photo-fields">
+          <label class="btn small file-btn">📁 Photo de la chaîne
+            <input id="chan-edit-file" type="file" accept="image/*" hidden />
+          </label>
+        </div>
+      </div>
+      <label>Nom de la chaîne
+        <input id="chan-edit-name" type="text" maxlength="40" />
+      </label>
+      <label>Description
+        <input id="chan-edit-desc" type="text" maxlength="300" />
+      </label>
+      <p id="chan-edit-error" class="error"></p>
+      <button id="chan-edit-save" class="btn primary" type="button">Enregistrer</button>
+    </div>
+  </div>
+
+  <!-- ====================== ADMINISTRATION ====================== -->
+  <div id="modal-hub" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🛠️ Administration</h2>
+      <button class="btn hub-item" data-hub="broadcast" type="button"><span>🔔 Notification système</span></button>
+      <button class="btn hub-item" data-hub="requests" type="button"><span>📨 Notifications des admins</span><span id="hub-requests-badge" class="badge hidden">0</span></button>
+      <button class="btn hub-item" data-hub="reports" type="button"><span>⚠️ Signalements</span><span id="hub-reports-badge" class="badge hidden">0</span></button>
+      <button class="btn hub-item" data-hub="users" type="button"><span>👥 Comptes, codes et bans</span></button>
+      <button class="btn hub-item" data-hub="stories" type="button"><span>📸 Stories</span></button>
+      <button class="btn hub-item" data-hub="channels" type="button"><span>📢 Chaînes</span></button>
+    </div>
+  </div>
+
+  <div id="modal-requests" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📨 Notifications des admins</h2>
+      <p class="hint">Demandes de bannissement envoyées par les administrateurs nommés. Toi seul peux les accepter.</p>
+      <div id="requests-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-admin-stories" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📸 Toutes les stories</h2>
+      <div id="admin-stories-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-admin-channels" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📢 Toutes les chaînes</h2>
+      <div id="admin-channels-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-ban" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2><span id="ban-title">⛔ Bannir</span> <span id="ban-target"></span></h2>
+      <div class="ban-presets">
+        <button class="btn small" data-min="30" type="button">30 min</button>
+        <button class="btn small" data-min="120" type="button">2 heures</button>
+        <button class="btn small" data-min="1440" type="button">1 jour</button>
+        <button class="btn small" data-min="7200" type="button">5 jours</button>
+        <button class="btn small" data-min="43200" type="button">30 jours</button>
+        <button class="btn small" data-min="perm" type="button">Définitif</button>
+      </div>
+      <label>Ou une durée personnalisée
+        <div class="row">
+          <input id="ban-num" type="number" min="1" placeholder="ex : 3" />
+          <select id="ban-unit">
+            <option value="1">minutes</option>
+            <option value="60">heures</option>
+            <option value="1440" selected>jours</option>
+          </select>
+        </div>
+      </label>
+      <label id="ban-reason-row" class="hidden">Raison (visible par l'administrateur)
+        <input id="ban-reason" type="text" maxlength="300" placeholder="Ex : harcèlement répété" />
+      </label>
+      <p id="ban-error" class="error"></p>
+      <button id="ban-confirm" class="btn primary" type="button">Bannir</button>
+    </div>
+  </div>
+
+  <div id="modal-sanction" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2 id="sanction-title"></h2>
+      <p id="sanction-sub" class="hint"></p>
+      <label class="check"><input id="sanction-warn" type="checkbox" checked /> Envoyer un avertissement au compte</label>
+      <input id="sanction-text" type="text" maxlength="500" />
+      <label class="check" id="sanction-block-row" style="margin-top:14px"><input id="sanction-block" type="checkbox" checked /> Lui interdire de recréer une chaîne</label>
+      <p id="sanction-error" class="error"></p>
+      <button id="sanction-confirm" class="btn primary" type="button">Supprimer</button>
+    </div>
+  </div>
+
+  <div id="modal-broadcast" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🔔 Notification système</h2>
+      <p class="hint">Le message est envoyé à tous les comptes par « Système ». Ils ne voient la discussion Système qu'une fois qu'ils ont reçu une notification.</p>
+      <form id="broadcast-form" autocomplete="off">
+        <label>Texte de la notification
+          <input id="broadcast-text" type="text" maxlength="1000" required placeholder="Ex : maintenance ce soir à 23h" />
+        </label>
+        <p id="broadcast-error" class="error"></p>
+        <button class="btn primary" type="submit">Envoyer à tout le monde</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====================== VISIONNEUSE DE PHOTO ====================== -->
+  <div id="modal-photo" class="modal lightbox hidden">
+    <button class="modal-close" data-close>✕</button>
+    <img id="photo-full" alt="Photo" />
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/script.js"></script>
+</body>
+</html>
