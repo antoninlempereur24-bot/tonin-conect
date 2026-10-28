@@ -1,26 +1,26 @@
 'use strict';
 
 /* ============================================================
-   TONIN CONECT - serveur
+    TONIN CONECT - serveur
 
-   PERSISTANCE (important) :
-   1) Par défaut : fichiers dans le dossier ./data (db.json + sauvegarde
-      db.json.bak + photos). Ça survit aux redémarrages SI le disque est
-      conservé (ton PC, un VPS, un disque persistant monté...).
-      Le dossier peut être changé avec la variable DATA_DIR.
-   2) Si ton hébergeur efface le disque à chaque redémarrage / mise en
-      veille (Render gratuit, Railway sans volume, Glitch, Replit...),
-      définis la variable DATABASE_URL avec l'adresse d'une base
-      PostgreSQL gratuite (Neon, Supabase, Render Postgres...).
-      Tout (comptes, PIN, amis, codes, messages, photos) est alors
-      stocké dans cette base et ne disparaît plus jamais.
+    PERSISTANCE (important) :
+    1) Par défaut : fichiers dans le dossier ./data (db.json + sauvegarde
+       db.json.bak + photos). Ça survit aux redémarrages SI le disque est
+       conservé (ton PC, un VPS, un disque persistant monté...).
+       Le dossier peut être changé avec la variable DATA_DIR.
+    2) Si ton hébergeur efface le disque à chaque redémarrage / mise en
+       veille (Render gratuit, Railway sans volume, Glitch, Replit...),
+       définis la variable DATABASE_URL avec l'adresse d'une base
+       PostgreSQL gratuite (Neon, Supabase, Render Postgres...).
+       Tout (comptes, PIN, amis, codes, messages, photos) est alors
+       stocké dans cette base et ne disparaît plus jamais.
 
    Variables d'environnement :
-     PORT          port du serveur (défaut 3000)
-     ADMIN_PIN     code administrateur initial (défaut 137920)
-     DATA_DIR      dossier des données en mode fichier
-     DATABASE_URL  adresse PostgreSQL (active le mode base de données)
-     PGSSL=disable désactive SSL pour un PostgreSQL local
+      PORT          port du serveur (défaut 3000)
+      ADMIN_PIN     code administrateur initial (défaut 137920)
+      DATA_DIR      dossier des données en mode fichier
+      DATABASE_URL  adresse PostgreSQL (active le mode base de données)
+      PGSSL=disable désactive SSL pour un PostgreSQL local
    ============================================================ */
 
 // Lit le fichier .env (s'il existe) sans aucun module supplémentaire.
@@ -157,20 +157,14 @@ function readLegacyFile() {
 const IS_PROD = process.env.NODE_ENV === 'production' || !!(process.env.RENDER || process.env.DYNO || process.env.RAILWAY_ENVIRONMENT);
 
 function pgConfig() {
-  const raw = String(process.env.DATABASE_URL || '').trim();
-  if (!raw) throw new Error('DATABASE_URL est vide : impossible de se connecter à PostgreSQL.');
-  let u;
-  try { u = new URL(raw); } catch (e) { throw new Error('DATABASE_URL est invalide (vérifie le lien copié depuis Supabase).'); }
-  if (!/^postgres(ql)?:$/.test(u.protocol)) throw new Error('DATABASE_URL doit commencer par postgresql://');
-  if (!u.hostname) throw new Error('DATABASE_URL ne contient pas d\'adresse de serveur.');
-  const isLocal = ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(u.hostname);
+  const connectionString = String(process.env.DATABASE_URL || '').trim();
+  if (!connectionString) throw new Error('DATABASE_URL est vide : impossible de se connecter à PostgreSQL.');
+  if (!/^postgres(ql)?:\/\//i.test(connectionString)) throw new Error('DATABASE_URL doit commencer par postgresql://');
+  const isLocal = /^postgres(ql)?:\/\/(?:[^@\/]*@)?(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?:[:\/?#]|$)/i.test(connectionString);
   if (isLocal && IS_PROD) throw new Error('DATABASE_URL pointe vers localhost en production : refusé.');
   return {
-    host: u.hostname,
-    port: Number(u.port) || 5432,
-    user: decodeURIComponent(u.username),
-    password: decodeURIComponent(u.password),
-    database: decodeURIComponent(u.pathname.replace(/^\//, '')) || 'postgres',
+    // L'URL complète est transmise telle quelle à « pg », qui gère lui-même l'analyse et la connexion.
+    connectionString,
     // Supabase : certificat accepté même s'il n'est pas dans la liste du système
     ssl: process.env.PGSSL === 'disable' && !IS_PROD ? false : { rejectUnauthorized: false },
     max: 5,
