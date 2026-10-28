@@ -400,8 +400,8 @@
     const list = state.contacts
       .filter((c) => (c.name + ' ' + c.pseudo).toLowerCase().includes(q))
       .sort((a, b) => {
-        const rank = (c) => (c.isSystem ? 0 : c.isAdmin ? 1 : 2); // Système et Administrateur épinglés
-        if (rank(a) !== rank(b)) return rank(a) - rank(b);
+        // seules les conversations épinglées par la personne remontent en haut
+        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
         const ta = a.last ? a.last.ts : 0;
         const tb = b.last ? b.last.ts : 0;
         if (ta !== tb) return tb - ta;
@@ -429,7 +429,7 @@
       const name = document.createElement('div');
       name.className = 'name';
       const nm = document.createElement('span');
-      nm.textContent = (c.isAdmin || c.isSystem ? '📌 ' : '') + (c.staff ? '🛠️ ' : '') + c.name;
+      nm.textContent = (c.staff ? '🛠️ ' : '') + c.name;
       name.appendChild(nm);
       if (c.last) {
         const t = document.createElement('time');
@@ -453,6 +453,22 @@
         b.textContent = state.unread[c.id];
         item.appendChild(b);
       }
+
+      const pin = document.createElement('button');
+      pin.type = 'button';
+      pin.className = 'pin-btn' + (c.pinned ? ' on' : '');
+      pin.textContent = '📌';
+      pin.title = c.pinned ? 'Désépingler' : 'Épingler';
+      pin.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const next = !c.pinned;
+        try {
+          await api('/api/contacts/' + encodeURIComponent(c.id) + '/pin', 'PUT', { value: next });
+          c.pinned = next;
+          renderContacts();
+        } catch (err) { toast(err.message); }
+      });
+      item.appendChild(pin);
 
       item.addEventListener('click', () => openChat(c.id));
       box.appendChild(item);
@@ -2219,6 +2235,7 @@
       else if (k === 'users') { openModal('modal-admin'); loadAdminUsers(); }
       else if (k === 'broadcast') { $('broadcast-text').value = ''; $('broadcast-error').textContent = ''; openModal('modal-broadcast'); }
       else if (k === 'requests') { openModal('modal-requests'); loadRequests(); }
+      else if (k === 'banlog') { openModal('modal-banlog'); loadBanLog(); }
       else if (k === 'stories') { openModal('modal-admin-stories'); loadAdminStories(); }
       else { openModal('modal-admin-channels'); loadAdminChannels(); }
     });
@@ -2249,7 +2266,7 @@
     const supreme = !!state.me.isAdmin;
     $('ban-title').textContent = supreme ? '⛔ Bannir' : '📨 Demander le ban de';
     $('ban-confirm').textContent = supreme ? 'Bannir' : 'Envoyer à l\'administration';
-    $('ban-reason-row').classList.toggle('hidden', supreme);
+    $('ban-reason-label').textContent = supreme ? 'Raison (facultative, gardée dans l\'historique des bans)' : 'Raison (visible par l\'administrateur)';
     $('ban-reason').value = '';
     $('ban-target').textContent = name;
     $('ban-num').value = '';
@@ -2275,6 +2292,7 @@
     if (!body.permanent && !(body.minutes >= 1)) { $('ban-error').textContent = 'Choisis une durée.'; return; }
     try {
       if (state.me.isAdmin) {
+        body.reason = $('ban-reason').value.trim();
         await api('/api/admin/users/' + b.userId + '/ban', 'POST', body);
         toast('Compte banni.');
       } else {
@@ -2331,6 +2349,30 @@
   };
 
   const durText = (m) => [Math.floor(m / 1440) && Math.floor(m / 1440) + ' j', Math.floor((m % 1440) / 60) && Math.floor((m % 1440) / 60) + ' h', m % 60 && (m % 60) + ' min'].filter(Boolean).join(' ') || '0 min';
+
+  async function loadBanLog() {
+    let d;
+    try { d = await api('/api/admin/ban-log'); } catch (e) { return toast(e.message); }
+    const box = $('banlog-list');
+    box.innerHTML = '';
+    if (!d.log.length) { box.appendChild(emptyDiv('Aucun bannissement enregistré pour le moment.')); return; }
+    const when = (ts) => fmtDate(ts) + ' à ' + fmtTime(ts);
+    d.log.forEach((e) => {
+      const dur = e.permanent ? 'définitivement' : 'pendant ' + durText(e.minutes);
+      const who = e.requestedBy ? e.byName + ' (demandé par ' + e.requestedBy + ')' : e.byName;
+      let st;
+      if (e.status === 'active') st = e.permanent ? '⛔ En cours · définitif' : '⛔ En cours · se termine le ' + when(e.until);
+      else if (e.status === 'ended') st = '✅ ' + e.endedBy + ' le ' + when(e.endedAt);
+      else st = '✅ Terminé le ' + when(e.until);
+      box.appendChild(adminCard([
+        el('strong', e.targetPseudo + (e.targetExists ? '' : ' (compte supprimé)')),
+        el('div', 'Banni le ' + when(e.ts) + ' ' + dur, 'hint'),
+        el('div', 'Par : ' + who, 'hint'),
+        el('div', 'Raison : ' + (e.reason || 'non précisée'), 'hint'),
+        el('div', st, 'hint'),
+      ]));
+    });
+  }
 
   async function loadRequests() {
     let d;

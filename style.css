@@ -627,3 +627,20 @@ select { margin-top: 6px; }
 .group-pick .contact { cursor: default; }
 .sender { font-size: 12px; font-weight: 700; color: var(--accent-2); margin-bottom: 2px; }
 .mine .sender { display: none; }
+
+
+/* Épingle à côté de chaque conversation */
+.pin-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 0;
+  padding: 6px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.3;
+  filter: grayscale(1);
+  transition: opacity 0.15s;
+}
+.pin-btn:hover { opacity: 0.7; }
+.pin-btn.on { opacity: 1; filter: none; }

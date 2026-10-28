@@ -459,6 +459,7 @@
       <button class="btn hub-item" data-hub="requests" type="button"><span>📨 Notifications des admins</span><span id="hub-requests-badge" class="badge hidden">0</span></button>
       <button class="btn hub-item" data-hub="reports" type="button"><span>⚠️ Signalements</span><span id="hub-reports-badge" class="badge hidden">0</span></button>
       <button class="btn hub-item" data-hub="users" type="button"><span>👥 Comptes, codes et bans</span></button>
+      <button class="btn hub-item" data-hub="banlog" type="button"><span>📜 Historique des bans</span></button>
       <button class="btn hub-item" data-hub="stories" type="button"><span>📸 Stories</span></button>
       <button class="btn hub-item" data-hub="channels" type="button"><span>📢 Chaînes</span></button>
     </div>
@@ -470,6 +471,15 @@
       <h2>📨 Notifications des admins</h2>
       <p class="hint">Demandes de bannissement envoyées par les administrateurs nommés. Toi seul peux les accepter.</p>
       <div id="requests-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-banlog" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📜 Historique des bans</h2>
+      <p class="hint">Qui a été banni, quand, pourquoi, pour combien de temps et par qui.</p>
+      <div id="banlog-list"></div>
     </div>
   </div>
 
@@ -511,7 +521,7 @@
           </select>
         </div>
       </label>
-      <label id="ban-reason-row" class="hidden">Raison (visible par l'administrateur)
+      <label id="ban-reason-row"><span id="ban-reason-label">Raison</span>
         <input id="ban-reason" type="text" maxlength="300" placeholder="Ex : harcèlement répété" />
       </label>
       <p id="ban-error" class="error"></p>

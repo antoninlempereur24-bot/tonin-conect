@@ -65,13 +65,14 @@ const emptyDb = () => ({
   users: [],
   messages: [],
   sessions: {},
-  admin: { pin: '', avatar: '', appearance: null },
+  admin: { pin: '', avatar: '', appearance: null, pinned: [] },
   reports: [],
   stories: [],
   calls: [],
   channels: [],
   banRequests: [],
   groups: [],
+  banLog: [],
 });
 
 let db = emptyDb();
@@ -91,6 +92,7 @@ function normalizeDb(d) {
     channels: Array.isArray(d.channels) ? d.channels : [],
     banRequests: Array.isArray(d.banRequests) ? d.banRequests : [],
     groups: Array.isArray(d.groups) ? d.groups : [],
+    banLog: Array.isArray(d.banLog) ? d.banLog : [],
   };
 }
 
@@ -240,7 +242,7 @@ function createPgStorage() {
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests, groups: db.groups };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests, groups: db.groups, banLog: db.banLog };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
@@ -452,6 +454,13 @@ function canChat(a, b) {
   return !!ua && !!getUser(b) && ua.contacts.includes(b);
 }
 
+// Conversations épinglées par chaque compte (enregistrées côté serveur : elles suivent le compte sur tous les appareils)
+function pinnedOf(userId) {
+  if (userId === 'admin') return Array.isArray(db.admin.pinned) ? db.admin.pinned : [];
+  const u = getUser(userId);
+  return u && Array.isArray(u.pinned) ? u.pinned : [];
+}
+
 function contactListFor(userId) {
   const viewer = userId === 'admin' ? null : getUser(userId);
   let list;
@@ -479,6 +488,7 @@ function contactListFor(userId) {
     list.unshift(adminPublic());
     if (last.system) list.unshift(systemPublic());
   }
+  const pins = new Set(pinnedOf(userId));
   return list.map((c) => {
     const u = c.isAdmin ? null : getUser(c.id);
     const alias = (viewer && viewer.aliases && viewer.aliases[c.id]) || '';
@@ -488,6 +498,7 @@ function contactListFor(userId) {
       alias,
       shareCode: u ? u.shareCode : '',
       since: (viewer && viewer.addedAt && viewer.addedAt[c.id]) || null,
+      pinned: pins.has(c.id),
       last: last[c.id] || null,
     };
   });
@@ -792,6 +803,23 @@ app.post('/api/me/reset-code', auth, (req, res) => {
 /* --------- Contacts --------- */
 
 app.get('/api/contacts', auth, (req, res) => res.json(contactListFor(req.userId)));
+
+app.put('/api/contacts/:id/pin', auth, (req, res) => {
+  const id = String(req.params.id);
+  const value = !!(req.body && req.body.value);
+  let holder;
+  if (req.userId === 'admin') holder = db.admin;
+  else holder = getUser(req.userId);
+  if (!holder) return res.status(404).json({ error: 'Compte introuvable.' });
+  let list = Array.isArray(holder.pinned) ? holder.pinned.filter((x) => x !== id) : [];
+  if (value) {
+    if (!contactListFor(req.userId).some((c) => c.id === id)) return res.status(404).json({ error: 'Conversation introuvable.' });
+    list.push(id);
+  }
+  holder.pinned = list.slice(-200);
+  saveDb();
+  res.json({ ok: true, pinned: value });
+});
 
 app.post('/api/contacts', auth, (req, res) => {
   if (req.isAdmin) return res.status(400).json({ error: 'L\'administrateur voit déjà tout le monde.' });
@@ -1539,6 +1567,28 @@ app.post('/api/admin/users/:id/ban', auth, supremeOnly, (req, res) => {
     until = Date.now() + m * 60000;
   }
   u.bannedUntil = until;
+  const qid0 = req.body && req.body.requestId;
+  const qr0 = qid0 && db.banRequests.find((x) => x.id === qid0);
+  const reqUser = qr0 && getUser(qr0.requesterId);
+  const nowTs = Date.now();
+  db.banLog.forEach((e) => {
+    if (e.targetId === u.id && !e.endedAt && (e.until >= PERM_BAN || e.until > nowTs)) { e.endedAt = nowTs; e.endedBy = 'Remplacé par un nouveau ban'; }
+  });
+  db.banLog.push({
+    id: uid(),
+    targetId: u.id,
+    targetPseudo: u.pseudo,
+    byName: 'Administrateur',
+    requestedBy: reqUser ? reqUser.pseudo : (qr0 ? 'Compte supprimé' : ''),
+    reason: String((qr0 && qr0.reason) || (req.body && req.body.reason) || '').trim().slice(0, 300),
+    ts: nowTs,
+    until,
+    permanent: until >= PERM_BAN,
+    minutes: until >= PERM_BAN ? 0 : Math.round((until - nowTs) / 60000),
+    endedAt: 0,
+    endedBy: '',
+  });
+  if (db.banLog.length > 2000) db.banLog = db.banLog.slice(-2000);
   const rid = req.body && req.body.reportId;
   const r = rid && db.reports.find((x) => x.id === rid);
   if (r) { r.status = 'banned'; r.handledAt = Date.now(); }
@@ -1568,8 +1618,37 @@ app.post('/api/admin/users/:id/unban', auth, supremeOnly, (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   u.bannedUntil = 0;
+  const nowTs = Date.now();
+  db.banLog.forEach((e) => {
+    if (e.targetId === u.id && !e.endedAt && (e.until >= PERM_BAN || e.until > nowTs)) { e.endedAt = nowTs; e.endedBy = 'Débanni par l\'Administrateur'; }
+  });
   saveDb();
   res.json({ ok: true });
+});
+
+// Historique des bannissements (supreme + administrateurs nommés)
+app.get('/api/admin/ban-log', auth, adminOnly, (req, res) => {
+  const now = Date.now();
+  const list = db.banLog.slice().sort((a, b) => b.ts - a.ts).map((e) => {
+    const t = getUser(e.targetId);
+    const status = e.endedAt ? 'ended' : (e.until >= PERM_BAN || e.until > now) ? 'active' : 'expired';
+    return {
+      id: e.id,
+      targetPseudo: t ? t.pseudo : e.targetPseudo,
+      targetExists: !!t,
+      byName: e.byName,
+      requestedBy: e.requestedBy || '',
+      reason: e.reason || '',
+      ts: e.ts,
+      until: e.until,
+      permanent: !!e.permanent,
+      minutes: e.minutes || 0,
+      status,
+      endedAt: e.endedAt || 0,
+      endedBy: e.endedBy || '',
+    };
+  });
+  res.json({ log: list });
 });
 
 // Demandes de bannissement envoyées par les administrateurs nommés à l'administrateur suprême
