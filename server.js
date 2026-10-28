@@ -42,7 +42,7 @@ const ACCENTS = ['violet', 'ocean', 'menthe', 'rose', 'orange'];
 const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 
 const ICON_URL =
-  'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/Photoroom_20261028_141211%20avec%20arrie%CC%80re-plan%20supprime%CC%81.png?raw=true';
+  'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20conect.jpg?raw=true';
 
 /* ------------------------- Base de données (mémoire) ------------------------- */
 
@@ -396,19 +396,32 @@ app.get('/healthz', (q, r) => r.type('text/plain').send('ok'));
 
 /* --------- Icône de l'application + PWA --------- */
 
-let iconBuf = null;
+let iconCache = null; // { buf, type }
+function sniffImage(buf) {
+  if (buf.length > 100 && buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf.length > 100 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  return null;
+}
 async function getIcon() {
-  const local = path.join(__dirname, 'icon.png'); // si tu poses ton propre icon.png, il est prioritaire
-  if (fs.existsSync(local)) return fs.readFileSync(local);
-  if (iconBuf) return iconBuf;
+  // si tu poses ton propre icon.png / icon.jpg à côté de server.js, il est prioritaire
+  for (const f of ['icon.png', 'icon.jpg']) {
+    const local = path.join(__dirname, f);
+    if (fs.existsSync(local)) {
+      const buf = fs.readFileSync(local);
+      const type = sniffImage(buf);
+      if (type) return { buf, type };
+    }
+  }
+  if (iconCache) return iconCache;
   if (typeof fetch !== 'function') return null;
   try {
     const r = await fetch(ICON_URL);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length < 100 || buf[0] !== 0x89 || buf[1] !== 0x50) throw new Error('le fichier n\'est pas un PNG');
-    iconBuf = buf;
-    return buf;
+    const type = sniffImage(buf);
+    if (!type) throw new Error('le fichier n\'est pas une image PNG/JPEG');
+    iconCache = { buf, type };
+    return iconCache;
   } catch (e) {
     console.error('Icône non téléchargée :', e.message);
     return null;
@@ -418,15 +431,17 @@ async function getIcon() {
 app.get(
   ['/icon.png', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png', '/favicon.ico', '/icon-192.png', '/icon-512.png'],
   async (req, res) => {
-    const buf = await getIcon();
-    if (!buf) return res.redirect(ICON_URL);
-    res.set('Content-Type', 'image/png');
+    const icon = await getIcon();
+    if (!icon) return res.redirect(ICON_URL);
+    res.set('Content-Type', icon.type);
     res.set('Cache-Control', 'public, max-age=86400');
-    res.send(buf);
+    res.send(icon.buf);
   }
 );
 
-app.get('/manifest.webmanifest', (q, r) => {
+app.get('/manifest.webmanifest', async (q, r) => {
+  const icon = await getIcon();
+  const type = icon ? icon.type : 'image/png';
   r.type('application/manifest+json').json({
     name: 'Tonin Conect',
     short_name: 'Tonin Conect',
@@ -439,8 +454,8 @@ app.get('/manifest.webmanifest', (q, r) => {
     theme_color: '#0f1220',
     lang: 'fr',
     icons: [
-      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icon-192.png', sizes: '192x192', type, purpose: 'any' },
+      { src: '/icon-512.png', sizes: '512x512', type, purpose: 'any' },
     ],
   });
 });

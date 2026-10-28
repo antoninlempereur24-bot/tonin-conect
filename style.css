@@ -130,10 +130,9 @@ label input { margin-top: 6px; }
   width: 76px;
   height: 76px;
   object-fit: contain;
-  border-radius: 18px;
   display: inline-block;
 }
-.logo.big img { width: 120px; height: 120px; border-radius: 26px; }
+.logo.big img { width: 120px; height: 120px; }
 
 .auth-card h1 {
   font-size: 28px;
