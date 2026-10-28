@@ -51,11 +51,11 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 const PIN_RE = /^\d{4}$/;
 const RESERVED = ['admin', 'administrateur', 'administrator'];
 const THEMES = ['dark', 'light'];
-const ACCENTS = ['violet', 'ocean', 'menthe', 'rose', 'orange'];
+const ACCENTS = ['violet', 'ocean', 'menthe', 'rose', 'pink', 'orange'];
 const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' };
 
 const ICON_URL =
-  'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20conect.jpg?raw=true';
+  'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20coco%20.jpg?raw=true';
 
 /* ------------------------- Base de données (mémoire) ------------------------- */
 
@@ -68,6 +68,7 @@ const emptyDb = () => ({
   stories: [],
   calls: [],
   channels: [],
+  banRequests: [],
 });
 
 let db = emptyDb();
@@ -85,6 +86,7 @@ function normalizeDb(d) {
     stories: Array.isArray(d.stories) ? d.stories : [],
     calls: Array.isArray(d.calls) ? d.calls : [],
     channels: Array.isArray(d.channels) ? d.channels : [],
+    banRequests: Array.isArray(d.banRequests) ? d.banRequests : [],
   };
 }
 
@@ -138,6 +140,8 @@ function createFileStorage() {
       fs.renameSync(tmp, DB_FILE);
     },
     async appendMessage() { /* inclus dans saveCore */ },
+    async updateMessage() { /* inclus dans saveCore */ },
+    async deleteMessage() { /* inclus dans saveCore */ },
     async removeMessagesFor() { /* inclus dans saveCore */ },
     async putFile(name, buf) { fs.writeFileSync(path.join(UPLOADS, name), buf); },
     async getFile(name) {
@@ -192,8 +196,8 @@ function createPgStorage() {
 
   const insertMessage = (m) =>
     pool.query(
-      'INSERT INTO messages(id, from_id, to_id, text, image, ts) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING',
-      [m.id, m.from, m.to, m.text || '', m.image || null, m.ts]
+      'INSERT INTO messages(id, from_id, to_id, text, image, ts, edited) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING',
+      [m.id, m.from, m.to, m.text || '', m.image || null, m.ts, !!m.edited]
     );
 
   return {
@@ -204,12 +208,13 @@ function createPgStorage() {
       await pool.query(
         'CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL, text TEXT, image TEXT, ts BIGINT NOT NULL)'
       );
+      await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited BOOLEAN DEFAULT FALSE');
       await pool.query('CREATE INDEX IF NOT EXISTS messages_ts ON messages (ts)');
       await pool.query('CREATE TABLE IF NOT EXISTS files (name TEXT PRIMARY KEY, data BYTEA NOT NULL)');
     },
     async load() {
       const core = await pool.query("SELECT value FROM kv WHERE key = 'core'");
-      const msgs = await pool.query('SELECT id, from_id, to_id, text, image, ts FROM messages ORDER BY ts ASC');
+      const msgs = await pool.query('SELECT id, from_id, to_id, text, image, ts, edited FROM messages ORDER BY ts ASC');
       if (!core.rows.length && !msgs.rows.length) {
         const legacy = readLegacyFile();
         if (legacy) {
@@ -223,18 +228,23 @@ function createPgStorage() {
       data.messages = msgs.rows.map((r) => {
         const m = { id: r.id, from: r.from_id, to: r.to_id, text: r.text || '', ts: Number(r.ts) };
         if (r.image) m.image = r.image;
+        if (r.edited) m.edited = true;
         return m;
       });
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
       );
     },
     async appendMessage(m) { await insertMessage(m); },
+    async updateMessage(m) {
+      await pool.query('UPDATE messages SET text = $2, edited = $3 WHERE id = $1', [m.id, m.text || '', !!m.edited]);
+    },
+    async deleteMessage(id) { await pool.query('DELETE FROM messages WHERE id = $1', [id]); },
     async removeMessagesFor(id) {
       await pool.query('DELETE FROM messages WHERE from_id = $1 OR to_id = $1', [id]);
     },
@@ -371,7 +381,7 @@ const isOnline = (id) => (online.get(id) || 0) > 0;
 const DEFAULT_APPEARANCE = { theme: 'dark', accent: 'violet' };
 
 function adminPublic() {
-  return { id: 'admin', pseudo: 'Administrateur', nickname: '', name: 'Administrateur', avatar: db.admin.avatar || '', isAdmin: true, online: isOnline('admin') };
+  return { id: 'admin', pseudo: 'Système', nickname: '', name: 'Système', avatar: db.admin.avatar || '', isAdmin: true, online: isOnline('admin') };
 }
 
 function publicUser(u) {
@@ -387,6 +397,7 @@ function meFull(userId) {
       name: 'Administrateur',
       avatar: db.admin.avatar || '',
       isAdmin: true,
+      staff: true,
       appearance: db.admin.appearance || DEFAULT_APPEARANCE,
     };
   }
@@ -400,6 +411,7 @@ function meFull(userId) {
     pin: u.pin,
     shareCode: u.shareCode,
     isAdmin: false,
+    staff: !!u.admin,
     appearance: u.appearance || DEFAULT_APPEARANCE,
   };
 }
@@ -419,13 +431,14 @@ function contactListFor(userId) {
     list = db.users.map(publicUser);
   } else {
     list = viewer.contacts.map(getUser).filter(Boolean).map(publicUser);
-    list.unshift(adminPublic());
   }
   const last = {};
   for (const m of db.messages) {
     if (m.from === userId) last[m.to] = m;
     else if (m.to === userId) last[m.from] = m;
   }
+  // « Système » n'apparaît qu'une fois qu'il a envoyé un message à l'utilisateur
+  if (viewer && last.admin) list.unshift(adminPublic());
   return list.map((c) => {
     const u = c.isAdmin ? null : getUser(c.id);
     const alias = (viewer && viewer.aliases && viewer.aliases[c.id]) || '';
@@ -495,7 +508,7 @@ app.get(
     const icon = await getIcon();
     if (!icon) return res.redirect(ICON_URL);
     res.set('Content-Type', icon.type);
-    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('Cache-Control', 'public, max-age=3600');
     res.send(icon.buf);
   }
 );
@@ -515,8 +528,8 @@ app.get('/manifest.webmanifest', async (q, r) => {
     theme_color: '#0f1220',
     lang: 'fr',
     icons: [
-      { src: '/icon-192.png', sizes: '192x192', type, purpose: 'any' },
-      { src: '/icon-512.png', sizes: '512x512', type, purpose: 'any' },
+      { src: '/icon-192.png?v=2', sizes: '192x192', type, purpose: 'any' },
+      { src: '/icon-512.png?v=2', sizes: '512x512', type, purpose: 'any' },
     ],
   });
 });
@@ -569,12 +582,18 @@ function auth(req, res, next) {
   }
   req.token = t;
   req.userId = s.userId;
-  req.isAdmin = s.userId === 'admin';
+  req.isAdmin = s.userId === 'admin'; // administrateur suprême
+  req.isStaff = req.isAdmin || !!(getUser(s.userId) && getUser(s.userId).admin);
   next();
 }
 
 function adminOnly(req, res, next) {
-  if (!req.isAdmin) return res.status(403).json({ error: 'Réservé à l\'administrateur.' });
+  if (!req.isStaff) return res.status(403).json({ error: 'Réservé à l\'administrateur.' });
+  next();
+}
+
+function supremeOnly(req, res, next) {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Réservé à l\'administrateur suprême.' });
   next();
 }
 
@@ -758,7 +777,7 @@ function addMessage(from, to, text, image) {
 }
 
 function displayName(viewerId, targetId) {
-  if (targetId === 'admin') return 'Administrateur';
+  if (targetId === 'admin') return 'Système';
   const t = getUser(targetId);
   if (!t) return 'Compte supprimé';
   const v = viewerId === 'admin' ? null : getUser(viewerId);
@@ -823,6 +842,33 @@ app.get('/api/messages/:id', auth, (req, res) => {
     .filter((m) => (m.from === me && m.to === other) || (m.from === other && m.to === me))
     .slice(-500);
   res.json(list);
+});
+
+app.put('/api/messages/:mid', auth, async (req, res) => {
+  const m = db.messages.find((x) => x.id === req.params.mid);
+  if (!m || m.from !== req.userId) return res.status(404).json({ error: 'Message introuvable.' });
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
+  if (!text && !m.image) return res.status(400).json({ error: 'Le message ne peut pas être vide.' });
+  if (text === m.text) return res.json(m);
+  m.text = text;
+  m.edited = true;
+  saveDb();
+  try { await storage.updateMessage(m); } catch (e) { console.error('Modification non enregistrée :', e.message); }
+  io.to(m.from).to(m.to).emit('message:edited', m);
+  res.json(m);
+});
+
+app.delete('/api/messages/:mid', auth, async (req, res) => {
+  const i = db.messages.findIndex((x) => x.id === req.params.mid && x.from === req.userId);
+  if (i === -1) return res.status(404).json({ error: 'Message introuvable.' });
+  const [m] = db.messages.splice(i, 1);
+  saveDb();
+  try {
+    await storage.deleteMessage(m.id);
+    if (m.image) await storage.delFile(m.image.split('/').pop());
+  } catch (e) { console.error('Suppression :', e.message); }
+  io.to(m.from).to(m.to).emit('message:deleted', { id: m.id, from: m.from, to: m.to });
+  res.json({ ok: true });
 });
 
 app.post('/api/upload', auth, async (req, res) => {
@@ -1183,7 +1229,8 @@ app.get('/api/admin/users', auth, adminOnly, (req, res) => {
       reports: db.reports.filter((r) => r.targetId === u.id).length,
       bannedUntil: banInfo(u) ? u.bannedUntil : 0,
       channelBan: !!u.channelBan,
-      pin: u.pin,
+      pin: req.isAdmin ? u.pin : '••••',
+      admin: !!u.admin,
       shareCode: u.shareCode,
       avatar: u.avatar || '',
       contacts: u.contacts.length,
@@ -1215,6 +1262,7 @@ async function removeUser(id) {
   db.stories = db.stories.filter((s) => s.userId !== id);
   db.stories.forEach((s) => { delete s.views[id]; s.likes = s.likes.filter((x) => x !== id); });
   db.reports = db.reports.filter((r) => r.targetId !== id);
+  db.banRequests = db.banRequests.filter((q) => q.targetId !== id && q.requesterId !== id);
   db.calls = db.calls.filter((c) => c.from !== id && c.to !== id);
   for (const t of Object.keys(db.sessions)) {
     if (db.sessions[t].userId === id) delete db.sessions[t];
@@ -1234,7 +1282,15 @@ async function removeUser(id) {
   return true;
 }
 
-app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
+function protectedTarget(req, res, id) {
+  const t = getUser(id);
+  if (id === req.userId) { res.status(400).json({ error: 'Action impossible sur ton propre compte.' }); return true; }
+  if (t && t.admin && !req.isAdmin) { res.status(403).json({ error: 'Seul l\'administrateur suprême peut agir sur un administrateur.' }); return true; }
+  return false;
+}
+
+app.delete('/api/admin/users/:id', auth, supremeOnly, async (req, res) => {
+  if (protectedTarget(req, res, req.params.id)) return;
   const ok = await removeUser(req.params.id);
   if (!ok) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   res.json({ ok: true });
@@ -1290,9 +1346,10 @@ app.post('/api/admin/reports/:id/dismiss', auth, adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/admin/users/:id/ban', auth, adminOnly, (req, res) => {
+app.post('/api/admin/users/:id/ban', auth, supremeOnly, (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (protectedTarget(req, res, u.id)) return;
   let until;
   if (req.body && req.body.permanent) {
     until = PERM_BAN;
@@ -1305,6 +1362,16 @@ app.post('/api/admin/users/:id/ban', auth, adminOnly, (req, res) => {
   const rid = req.body && req.body.reportId;
   const r = rid && db.reports.find((x) => x.id === rid);
   if (r) { r.status = 'banned'; r.handledAt = Date.now(); }
+  const qid = req.body && req.body.requestId;
+  const qr = qid && db.banRequests.find((x) => x.id === qid);
+  if (qr) {
+    qr.status = 'approved';
+    qr.handledAt = Date.now();
+    const rr = qr.reportId && db.reports.find((x) => x.id === qr.reportId);
+    if (rr) { rr.status = 'banned'; rr.handledAt = Date.now(); }
+    if (getUser(qr.requesterId)) addMessage('admin', qr.requesterId, '✅ Ta demande de bannissement concernant ' + u.pseudo + ' a été acceptée.');
+    io.to('admin').emit('requests:update');
+  }
   for (const t of Object.keys(db.sessions)) {
     if (db.sessions[t].userId === u.id) delete db.sessions[t];
   }
@@ -1318,12 +1385,87 @@ app.post('/api/admin/users/:id/ban', auth, adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/admin/users/:id/unban', auth, adminOnly, (req, res) => {
+app.post('/api/admin/users/:id/unban', auth, supremeOnly, (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   u.bannedUntil = 0;
   saveDb();
   res.json({ ok: true });
+});
+
+// Demandes de bannissement envoyées par les administrateurs nommés à l'administrateur suprême
+app.post('/api/admin/ban-requests', auth, adminOnly, (req, res) => {
+  if (req.isAdmin) return res.status(400).json({ error: 'Tu peux bannir directement.' });
+  const b = req.body || {};
+  const t = getUser(b.targetId);
+  if (!t) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (t.id === req.userId || t.admin) return res.status(403).json({ error: 'Tu ne peux pas demander le bannissement de cet administrateur.' });
+  const reason = String(b.reason || '').trim().slice(0, 300);
+  if (!reason) return res.status(400).json({ error: 'Explique la raison de la demande.' });
+  const permanent = !!b.permanent;
+  let minutes = 0;
+  if (!permanent) {
+    minutes = Math.floor(Number(b.minutes));
+    if (!(minutes >= 1 && minutes <= 5 * 525600)) return res.status(400).json({ error: 'Durée invalide.' });
+  }
+  if (db.banRequests.some((x) => x.status === 'open' && x.requesterId === req.userId && x.targetId === t.id)) {
+    return res.status(409).json({ error: 'Tu as déjà envoyé une demande pour ce compte.' });
+  }
+  const rid = b.reportId ? String(b.reportId) : '';
+  db.banRequests.push({ id: uid(), requesterId: req.userId, targetId: t.id, reason, permanent, minutes, reportId: rid, ts: Date.now(), status: 'open' });
+  const rep = rid && db.reports.find((x) => x.id === rid);
+  if (rep && rep.status === 'open') { rep.status = 'forwarded'; rep.handledAt = Date.now(); }
+  saveDb();
+  io.to('admin').emit('requests:update');
+  io.to('admin').emit('reports:update');
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/ban-requests', auth, supremeOnly, (req, res) => {
+  const list = db.banRequests.slice().sort((a, b) => b.ts - a.ts).map((q) => {
+    const t = getUser(q.targetId);
+    const p = getUser(q.requesterId);
+    return {
+      id: q.id, reason: q.reason, ts: q.ts, status: q.status, permanent: !!q.permanent, minutes: q.minutes || 0, reportId: q.reportId || '',
+      targetId: q.targetId, targetExists: !!t, targetPseudo: t ? t.pseudo : 'Compte supprimé',
+      targetName: t ? (t.nickname ? t.nickname + ' (' + t.pseudo + ')' : t.pseudo) : 'Compte supprimé',
+      requesterName: p ? p.pseudo : 'Compte supprimé',
+    };
+  });
+  res.json({ open: db.banRequests.filter((q) => q.status === 'open').length, requests: list });
+});
+
+app.post('/api/admin/ban-requests/:id/refuse', auth, supremeOnly, (req, res) => {
+  const q = db.banRequests.find((x) => x.id === req.params.id);
+  if (!q) return res.status(404).json({ error: 'Demande introuvable.' });
+  q.status = 'refused';
+  q.handledAt = Date.now();
+  const t = getUser(q.targetId);
+  if (getUser(q.requesterId)) addMessage('admin', q.requesterId, '❌ Ta demande de bannissement concernant ' + (t ? t.pseudo : 'ce compte') + ' a été refusée.');
+  saveDb();
+  io.to('admin').emit('requests:update');
+  res.json({ ok: true });
+});
+
+// Notification « Système » envoyée à tous les comptes
+app.post('/api/admin/broadcast', auth, supremeOnly, (req, res) => {
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ error: 'Écris le texte de la notification.' });
+  let n = 0;
+  for (const u of db.users) { addMessage('admin', u.id, '🔔 ' + text); n++; }
+  res.json({ ok: true, sent: n });
+});
+
+// Nommer / retirer un administrateur (suprême uniquement)
+app.post('/api/admin/users/:id/admin', auth, supremeOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  u.admin = !!(req.body && req.body.value);
+  saveDb();
+  if (u.admin) io.in(u.id).socketsJoin('admin'); else io.in(u.id).socketsLeave('admin');
+  io.to(u.id).emit('me:update');
+  io.to('admin').emit('contacts:update');
+  res.json({ ok: true, admin: u.admin });
 });
 
 app.post('/api/admin/users/:id/channel-ban', auth, adminOnly, (req, res) => {
@@ -1406,6 +1548,7 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   const id = socket.userId;
   socket.join(id);
+  { const su = getUser(id); if (su && su.admin) socket.join('admin'); }
 
   const n = (online.get(id) || 0) + 1;
   online.set(id, n);
@@ -1419,6 +1562,7 @@ io.on('connection', (socket) => {
     const image = data && data.image ? String(data.image) : '';
     if (image && !/^\/uploads\/[a-f0-9]{24}\.(jpg|png|webp|gif)$/.test(image)) return reply({ error: 'Image invalide.' });
     if (!text && !image) return reply({ error: 'Message vide.' });
+    if (to === 'admin') return reply({ error: 'Les notifications du Système sont en lecture seule.' });
     if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas écrire à cette personne.' });
 
     addMessage(id, to, text, image);

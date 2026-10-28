@@ -28,6 +28,7 @@
     ocean: ['#2f80ed', '#2dd4bf'],
     menthe: ['#10b981', '#84cc16'],
     rose: ['#ec4899', '#f97316'],
+    pink: ['#ff4fa3', '#ff8fc7'],
     orange: ['#f59e0b', '#ef4444'],
   };
 
@@ -299,8 +300,8 @@
     holder.innerHTML = '';
     holder.appendChild(makeAvatar(me));
     $('me-name').textContent = me.name || me.pseudo;
-    $('me-sub').textContent = me.isAdmin ? 'Compte administrateur' : 'Connecté';
-    $('btn-admin').classList.toggle('hidden', !me.isAdmin);
+    $('me-sub').textContent = me.isAdmin ? 'Administrateur suprême' : me.staff ? 'Administrateur' : 'Connecté';
+    $('btn-admin').classList.toggle('hidden', !me.staff);
     $('btn-add').classList.toggle('hidden', !!me.isAdmin);
   }
 
@@ -390,10 +391,10 @@
     const list = state.contacts
       .filter((c) => (c.name + ' ' + c.pseudo).toLowerCase().includes(q))
       .sort((a, b) => {
+        if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1; // Système épinglé
         const ta = a.last ? a.last.ts : 0;
         const tb = b.last ? b.last.ts : 0;
         if (ta !== tb) return tb - ta;
-        if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
 
@@ -418,7 +419,7 @@
       const name = document.createElement('div');
       name.className = 'name';
       const nm = document.createElement('span');
-      nm.textContent = c.name + (c.isAdmin ? ' (admin)' : '');
+      nm.textContent = (c.isAdmin ? '📌 ' : '') + c.name;
       name.appendChild(nm);
       if (c.last) {
         const t = document.createElement('time');
@@ -460,8 +461,9 @@
     holder.appendChild(avatarWithDot(c));
     $('chat-name').textContent = c.name;
     $('btn-call').classList.toggle('hidden', !!c.isAdmin);
+    $('send-form').classList.toggle('hidden', !!c.isAdmin && !state.me.isAdmin);
     $('chat-status').textContent = c.isAdmin
-      ? 'Compte administrateur'
+      ? 'Notifications du système'
       : state.online.has(c.id) ? 'En ligne' : 'Hors ligne';
   }
 
@@ -510,6 +512,7 @@
     row.className = 'msg ' + (m.from === state.me.id ? 'mine' : 'theirs');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
+    row.dataset.id = m.id;
 
     if (m.image) {
       bubble.classList.add('has-img');
@@ -531,10 +534,48 @@
       bubble.appendChild(txt);
     }
     const t = document.createElement('time');
-    t.textContent = fmtTime(m.ts);
+    t.textContent = (m.edited ? 'modifié · ' : '') + fmtTime(m.ts);
     bubble.appendChild(t);
+    if (m.from === state.me.id) {
+      const acts = document.createElement('div');
+      acts.className = 'msg-actions';
+      if (m.text) {
+        const ed = document.createElement('button');
+        ed.type = 'button';
+        ed.title = 'Modifier';
+        ed.textContent = '✏️';
+        ed.addEventListener('click', () => editMessage(m));
+        acts.appendChild(ed);
+      }
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.title = 'Supprimer';
+      del.textContent = '🗑';
+      del.addEventListener('click', () => deleteMessage(m));
+      acts.appendChild(del);
+      row.appendChild(acts);
+    }
     row.appendChild(bubble);
     box.appendChild(row);
+  }
+
+  async function editMessage(m) {
+    const text = prompt('Modifier le message :', m.text);
+    if (text === null) return;
+    try { await api('/api/messages/' + m.id, 'PUT', { text }); } catch (err) { toast(err.message); }
+  }
+
+  async function deleteMessage(m) {
+    if (!confirm('Supprimer ce message pour tout le monde ?')) return;
+    try { await api('/api/messages/' + m.id, 'DELETE'); } catch (err) { toast(err.message); }
+  }
+
+  function rerenderCurrent(other) {
+    if (state.current !== other || !state.cache[other]) return;
+    const box = $('messages');
+    const top = box.scrollTop;
+    renderMessages(state.cache[other]);
+    box.scrollTop = top;
   }
 
   function scrollBottom() {
@@ -798,7 +839,11 @@
 
   /* ---------------- Administration ---------------- */
 
-  $('btn-admin').addEventListener('click', () => { refreshReportsBadge(); openModal('modal-hub'); });
+  $('btn-admin').addEventListener('click', () => {
+    document.querySelectorAll('[data-hub="broadcast"],[data-hub="requests"]').forEach((b) => b.classList.toggle('hidden', !state.me.isAdmin));
+    refreshReportsBadge();
+    openModal('modal-hub');
+  });
   $('admin-refresh').addEventListener('click', loadAdminUsers);
 
   async function loadAdminUsers() {
@@ -843,7 +888,7 @@
       who.className = 'who';
       who.appendChild(makeAvatar(u));
       const nm = document.createElement('span');
-      nm.textContent = u.nickname ? u.nickname + ' (' + u.pseudo + ')' : u.pseudo;
+      nm.textContent = (u.admin ? '👑 ' : '') + (u.nickname ? u.nickname + ' (' + u.pseudo + ')' : u.pseudo);
       who.appendChild(nm);
       cell(who);
 
@@ -894,16 +939,30 @@
           toast(err.message);
         }
       });
-      actions.appendChild(chat);
+      if (state.me.isAdmin) actions.appendChild(chat);
+      if (state.me.isAdmin) {
+        const adm = document.createElement('button');
+        adm.className = 'btn small' + (u.admin ? ' danger' : '');
+        adm.textContent = u.admin ? 'Retirer admin' : 'Nommer admin';
+        adm.addEventListener('click', async () => {
+          if (!confirm((u.admin ? 'Retirer les droits d\'administrateur à « ' : 'Donner les droits d\'administrateur à « ') + u.pseudo + ' » ?')) return;
+          try {
+            await api('/api/admin/users/' + u.id + '/admin', 'POST', { value: !u.admin });
+            toast(u.admin ? 'Administrateur retiré.' : u.pseudo + ' est maintenant administrateur.');
+            loadAdminUsers();
+          } catch (err) { toast(err.message); }
+        });
+        actions.appendChild(adm);
+      }
       const ban = document.createElement('button');
       ban.className = 'btn small' + (u.bannedUntil ? '' : ' danger');
-      ban.textContent = u.bannedUntil ? 'Débannir' : 'Bannir';
+      ban.textContent = u.bannedUntil ? 'Débannir' : (state.me.isAdmin ? 'Bannir' : 'Demander un ban');
       ban.addEventListener('click', async () => {
         if (!u.bannedUntil) return openBan(u.id, u.pseudo, loadAdminUsers);
         try { await api('/api/admin/users/' + u.id + '/unban', 'POST'); toast('Compte débanni.'); loadAdminUsers(); }
         catch (err) { toast(err.message); }
       });
-      actions.appendChild(ban);
+      if (state.me.isAdmin || (!u.bannedUntil && !u.admin)) actions.appendChild(ban);
       if (u.channelBan) {
         const cb = document.createElement('button');
         cb.className = 'btn small';
@@ -914,7 +973,7 @@
         });
         actions.appendChild(cb);
       }
-      actions.appendChild(del);
+      if (state.me.isAdmin) actions.appendChild(del);
       cell(actions);
 
       body.appendChild(tr);
@@ -945,7 +1004,8 @@
     const admin = !!state.me.isAdmin;
     $('tabbar').classList.toggle('hidden', admin);
     showTab('chats');
-    if (admin) refreshReportsBadge(); else loadStories().catch(() => {});
+    if (state.me.staff) refreshReportsBadge();
+    if (!admin) loadStories().catch(() => {});
   }
 
   const emptyDiv = (text) => {
@@ -957,6 +1017,35 @@
 
   function bindExtraSocket(socket) {
     socket.on('banned', ({ message }) => forceLogout(message));
+    socket.on('requests:update', () => {
+      if (!state.me || !state.me.isAdmin) return;
+      if (!$('modal-requests').classList.contains('hidden')) loadRequests(); else refreshReportsBadge();
+    });
+    socket.on('message:edited', (msg) => {
+      const other = msg.from === state.me.id ? msg.to : msg.from;
+      const list = state.cache[other];
+      const i = list ? list.findIndex((x) => x.id === msg.id) : -1;
+      if (i !== -1) list[i] = msg;
+      const c = state.contacts.find((x) => x.id === other);
+      if (c && c.last && c.last.id === msg.id) c.last = msg;
+      rerenderCurrent(other);
+      renderContacts();
+    });
+    socket.on('message:deleted', async ({ id, from, to }) => {
+      const other = from === state.me.id ? to : from;
+      const list = state.cache[other];
+      if (list) { const i = list.findIndex((x) => x.id === id); if (i !== -1) list.splice(i, 1); }
+      rerenderCurrent(other);
+      try { await loadContacts(); } catch (e) { /* ignore */ }
+    });
+    socket.on('me:update', async () => {
+      try {
+        state.me = await api('/api/me');
+        renderMe();
+        if (state.me.staff) refreshReportsBadge();
+        toast(state.me.staff ? 'Tu es maintenant administrateur.' : 'Tu n\'es plus administrateur.');
+      } catch (e) { /* ignore */ }
+    });
     socket.on('channels:update', () => {
       if (!state.me || state.me.isAdmin) return;
       loadChannels().catch(() => {});
@@ -967,7 +1056,7 @@
     });
     socket.on('calls:update', () => { if (state.tab === 'calls') loadCalls(); });
     socket.on('reports:update', () => {
-      if (!state.me || !state.me.isAdmin) return;
+      if (!state.me || !state.me.staff) return;
       if (!$('modal-reports').classList.contains('hidden')) loadReports(); else refreshReportsBadge();
     });
 
@@ -1091,7 +1180,10 @@
   }
 
   function updateStoriesDot() {
-    $('stories-dot').classList.toggle('hidden', !state.stories.some((s) => !s.seen));
+    const n = state.stories.filter((s) => !s.seen).length;
+    const d = $('stories-dot');
+    d.textContent = n > 9 ? '9+' : String(n);
+    d.classList.toggle('hidden', !n);
   }
 
   function storyUser(userId, fallbackName) {
@@ -1430,8 +1522,8 @@
 
   /* ---------------- Signalements (administrateur) ---------------- */
 
-  function setReportsBadge(n) {
-    ['reports-badge', 'hub-reports-badge'].forEach((id) => {
+  function setBadges(rep, req) {
+    [['reports-badge', rep + req], ['hub-reports-badge', rep], ['hub-requests-badge', req]].forEach(([id, n]) => {
       const b = $(id);
       b.textContent = n;
       b.classList.toggle('hidden', !n);
@@ -1441,7 +1533,11 @@
   async function refreshReportsBadge() {
     try {
       const d = await api('/api/admin/reports');
-      setReportsBadge(d.open);
+      let req = 0;
+      if (state.me && state.me.isAdmin) {
+        try { req = (await api('/api/admin/ban-requests')).open; } catch (e) { /* ignore */ }
+      }
+      setBadges(d.open, req);
       return d;
     } catch (e) { return null; }
   }
@@ -1487,12 +1583,13 @@
         act(() => api('/api/admin/reports/' + r.id + '/warn', 'POST', { text }), 'Avertissement envoyé.');
       });
       mk('🙈 Ne rien faire', '', () => act(() => api('/api/admin/reports/' + r.id + '/dismiss', 'POST'), 'Signalement classé.'));
-      const banB = mk('⛔ Bannir', 'danger', () => openBan(r.targetId, r.targetPseudo, () => loadReports(), r.id));
+      const banB = mk(state.me.isAdmin ? '⛔ Bannir' : '📨 Demander un ban', 'danger', () => openBan(r.targetId, r.targetPseudo, () => loadReports(), r.id));
       const del = mk('🗑 Supprimer le compte', 'danger', () => {
         if (!confirm('Supprimer définitivement le compte « ' + r.targetPseudo + ' » et ses messages ?')) return;
         act(() => api('/api/admin/users/' + r.targetId, 'DELETE'), 'Compte supprimé.');
       });
       if (!r.targetExists) { warn.disabled = true; del.disabled = true; banB.disabled = true; }
+      if (!state.me.isAdmin) del.remove();
 
       [h, p, m, row].forEach((x) => card.appendChild(x));
       box.appendChild(card);
@@ -1506,7 +1603,7 @@
       done.slice(0, 30).forEach((r) => {
         const line = document.createElement('div');
         line.className = 'report-done';
-        line.textContent = ({ warned: '⚠️ Avertissement envoyé', banned: '⛔ Ban appliqué' }[r.status] || '✔ Classé sans suite') + ' · ' + r.targetName + ' (par ' + r.reporterName + ') · ' + fmtDate(r.ts);
+        line.textContent = ({ warned: '⚠️ Avertissement envoyé', banned: '⛔ Ban appliqué', forwarded: '📨 Transmis à l\'administration' }[r.status] || '✔ Classé sans suite') + ' · ' + r.targetName + ' (par ' + r.reporterName + ') · ' + fmtDate(r.ts);
         box.appendChild(line);
       });
     }
@@ -1803,9 +1900,24 @@
       const k = b.dataset.hub;
       if (k === 'reports') { openModal('modal-reports'); loadReports(); }
       else if (k === 'users') { openModal('modal-admin'); loadAdminUsers(); }
+      else if (k === 'broadcast') { $('broadcast-text').value = ''; $('broadcast-error').textContent = ''; openModal('modal-broadcast'); }
+      else if (k === 'requests') { openModal('modal-requests'); loadRequests(); }
       else if (k === 'stories') { openModal('modal-admin-stories'); loadAdminStories(); }
       else { openModal('modal-admin-channels'); loadAdminChannels(); }
     });
+  });
+
+  $('broadcast-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('broadcast-error').textContent = '';
+    const text = $('broadcast-text').value.trim();
+    if (!text) { $('broadcast-error').textContent = 'Écris le texte de la notification.'; return; }
+    if (!confirm('Envoyer cette notification à tous les comptes ?')) return;
+    try {
+      const r = await api('/api/admin/broadcast', 'POST', { text });
+      closeModal('modal-broadcast');
+      toast('Notification envoyée à ' + r.sent + ' compte(s).');
+    } catch (err) { $('broadcast-error').textContent = err.message; }
   });
 
   function markBanPreset() {
@@ -1815,8 +1927,13 @@
     });
   }
 
-  function openBan(userId, name, done, reportId) {
-    state.ban = { userId, done, reportId, sel: 1440 };
+  function openBan(userId, name, done, reportId, requestId) {
+    state.ban = { userId, done, reportId, requestId, sel: 1440 };
+    const supreme = !!state.me.isAdmin;
+    $('ban-title').textContent = supreme ? '⛔ Bannir' : '📨 Demander le ban de';
+    $('ban-confirm').textContent = supreme ? 'Bannir' : 'Envoyer à l\'administration';
+    $('ban-reason-row').classList.toggle('hidden', supreme);
+    $('ban-reason').value = '';
     $('ban-target').textContent = name;
     $('ban-num').value = '';
     $('ban-error').textContent = '';
@@ -1835,14 +1952,22 @@
 
   $('ban-confirm').addEventListener('click', async () => {
     const b = state.ban;
-    const body = { reportId: b.reportId };
+    const body = { reportId: b.reportId, requestId: b.requestId };
     if (b.sel === 'perm') body.permanent = true;
     else body.minutes = b.sel || Number($('ban-num').value) * Number($('ban-unit').value);
     if (!body.permanent && !(body.minutes >= 1)) { $('ban-error').textContent = 'Choisis une durée.'; return; }
     try {
-      await api('/api/admin/users/' + b.userId + '/ban', 'POST', body);
+      if (state.me.isAdmin) {
+        await api('/api/admin/users/' + b.userId + '/ban', 'POST', body);
+        toast('Compte banni.');
+      } else {
+        body.targetId = b.userId;
+        body.reason = $('ban-reason').value.trim();
+        if (!body.reason) { $('ban-error').textContent = 'Explique la raison de la demande.'; return; }
+        await api('/api/admin/ban-requests', 'POST', body);
+        toast('Demande envoyée à l\'administration.');
+      }
       closeModal('modal-ban');
-      toast('Compte banni.');
       if (b.done) b.done();
     } catch (err) { $('ban-error').textContent = err.message; }
   });
@@ -1887,6 +2012,49 @@
     b.addEventListener('click', fn);
     return b;
   };
+
+  const durText = (m) => [Math.floor(m / 1440) && Math.floor(m / 1440) + ' j', Math.floor((m % 1440) / 60) && Math.floor((m % 1440) / 60) + ' h', m % 60 && (m % 60) + ' min'].filter(Boolean).join(' ') || '0 min';
+
+  async function loadRequests() {
+    let d;
+    try { d = await api('/api/admin/ban-requests'); } catch (e) { return toast(e.message); }
+    const box = $('requests-list');
+    box.innerHTML = '';
+    const open = d.requests.filter((r) => r.status === 'open');
+    const done = d.requests.filter((r) => r.status !== 'open');
+    if (!open.length) box.appendChild(emptyDiv('Aucune demande en attente.'));
+    open.forEach((r) => {
+      const dur = r.permanent ? 'définitivement' : 'pendant ' + durText(r.minutes);
+      const row = el('div', undefined, 'row');
+      const ok = btnEl('✅ Accepter', 'primary', async () => {
+        try {
+          await api('/api/admin/users/' + r.targetId + '/ban', 'POST', { requestId: r.id, permanent: r.permanent, minutes: r.minutes });
+          toast('Compte banni.');
+          loadRequests();
+        } catch (err) { toast(err.message); }
+      });
+      const other = btnEl('⏱ Autre durée', '', () => openBan(r.targetId, r.targetPseudo, () => loadRequests(), r.reportId, r.id));
+      const no = btnEl('❌ Refuser', 'danger', async () => {
+        try { await api('/api/admin/ban-requests/' + r.id + '/refuse', 'POST'); toast('Demande refusée.'); loadRequests(); }
+        catch (err) { toast(err.message); }
+      });
+      if (!r.targetExists) { ok.disabled = true; other.disabled = true; }
+      [ok, other, no].forEach((b) => row.appendChild(b));
+      box.appendChild(adminCard([
+        el('strong', r.requesterName + ' demande de bannir ' + r.targetName + ' ' + dur),
+        el('p', '« ' + r.reason + ' »'),
+        el('small', fmtDay(r.ts) + ' ' + fmtTime(r.ts)),
+        row,
+      ]));
+    });
+    if (done.length) {
+      box.appendChild(el('div', 'Déjà traitées', 'section-label'));
+      done.slice(0, 30).forEach((r) => {
+        box.appendChild(el('div', (r.status === 'approved' ? '✅ Acceptée' : '❌ Refusée') + ' · ' + r.targetName + ' (par ' + r.requesterName + ') · ' + fmtDate(r.ts), 'report-done'));
+      });
+    }
+    refreshReportsBadge();
+  }
 
   async function loadAdminStories() {
     let list;
