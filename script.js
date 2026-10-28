@@ -84,6 +84,15 @@
 
   /* ---------------- Utilitaires ---------------- */
 
+  // Lien GitHub « blob » => fichier brut (sinon ce n'est pas une image)
+  function fixImageUrl(u) {
+    u = (u || '').trim();
+    if (/^https?:\/\/github\.com\/.+\/blob\//i.test(u) && !/[?&]raw=true/i.test(u)) {
+      u += (u.includes('?') ? '&' : '?') + 'raw=true';
+    }
+    return u;
+  }
+
   function toast(text) {
     const t = $('toast');
     t.textContent = text;
@@ -615,16 +624,27 @@
     const holder = $('settings-preview');
     holder.innerHTML = '';
     const isAdmin = !!state.me.isAdmin;
-    holder.appendChild(
-      makeAvatar(
-        {
-          pseudo: isAdmin ? 'Administrateur' : ($('settings-pseudo').value || state.me.pseudo),
-          avatar: state.avatarValue,
-          isAdmin,
-        },
-        true
-      )
+    const av = makeAvatar(
+      {
+        pseudo: isAdmin ? 'Administrateur' : ($('settings-pseudo').value || state.me.pseudo),
+        avatar: state.avatarValue,
+        isAdmin,
+      },
+      true
     );
+    state.avatarBroken = false;
+    const im = av.querySelector('img');
+    if (im && /^https?:/i.test(state.avatarValue)) {
+      im.addEventListener('error', () => {
+        state.avatarBroken = true;
+        $('settings-error').textContent = 'Cette adresse ne donne pas une image. Utilise plutôt « Importer une photo ».';
+      });
+      im.addEventListener('load', () => {
+        state.avatarBroken = false;
+        if ($('settings-error').textContent.startsWith('Cette adresse')) $('settings-error').textContent = '';
+      });
+    }
+    holder.appendChild(av);
   }
 
   $('btn-settings').addEventListener('click', async () => {
@@ -663,6 +683,7 @@
     $('settings-avatar-url').placeholder = state.avatarValue.startsWith('data:')
       ? '(photo importée)'
       : 'https://…';
+    state.avatarBroken = false;
     renderSettingsPreview();
     markAppearanceButtons();
     openModal('modal-settings');
@@ -679,7 +700,7 @@
   });
 
   $('settings-avatar-url').addEventListener('input', (e) => {
-    state.avatarValue = e.target.value.trim();
+    state.avatarValue = fixImageUrl(e.target.value);
     renderSettingsPreview();
   });
 
@@ -732,6 +753,11 @@
     const code = $('settings-code').value;
     const body = { avatar: state.avatarValue, appearance: state.appearance };
 
+    if (state.avatarBroken && /^https?:/i.test(state.avatarValue)) {
+      $('settings-error').textContent = 'La photo n\'est pas valide : importe-la depuis ton appareil ou retire-la.';
+      return;
+    }
+
     if (isAdmin) {
       if (code !== '') {
         if (code.length < 4) {
@@ -749,6 +775,8 @@
       body.pseudo = $('settings-pseudo').value;
     }
 
+    const saveBtn = $('settings-save');
+    saveBtn.disabled = true;
     try {
       state.me = await api('/api/me', 'PUT', body);
       renderMe();
@@ -756,6 +784,8 @@
       toast(isAdmin && body.pin ? 'Réglages enregistrés. Nouveau code administrateur actif.' : 'Réglages enregistrés !');
     } catch (err) {
       $('settings-error').textContent = err.message;
+    } finally {
+      saveBtn.disabled = false;
     }
   });
 
