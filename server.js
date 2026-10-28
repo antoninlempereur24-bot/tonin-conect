@@ -153,6 +153,31 @@ function readLegacyFile() {
   return null;
 }
 
+/* Configuration PostgreSQL explicite : uniquement DATABASE_URL, jamais de repli vers localhost. */
+const IS_PROD = process.env.NODE_ENV === 'production' || !!(process.env.RENDER || process.env.DYNO || process.env.RAILWAY_ENVIRONMENT);
+
+function pgConfig() {
+  const raw = String(process.env.DATABASE_URL || '').trim();
+  if (!raw) throw new Error('DATABASE_URL est vide : impossible de se connecter à PostgreSQL.');
+  let u;
+  try { u = new URL(raw); } catch (e) { throw new Error('DATABASE_URL est invalide (vérifie le lien copié depuis Supabase).'); }
+  if (!/^postgres(ql)?:$/.test(u.protocol)) throw new Error('DATABASE_URL doit commencer par postgresql://');
+  if (!u.hostname) throw new Error('DATABASE_URL ne contient pas d\'adresse de serveur.');
+  const isLocal = ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(u.hostname);
+  if (isLocal && IS_PROD) throw new Error('DATABASE_URL pointe vers localhost en production : refusé.');
+  return {
+    host: u.hostname,
+    port: Number(u.port) || 5432,
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database: decodeURIComponent(u.pathname.replace(/^\//, '')) || 'postgres',
+    // Supabase : certificat accepté même s'il n'est pas dans la liste du système
+    ssl: process.env.PGSSL === 'disable' && !IS_PROD ? false : { rejectUnauthorized: false },
+    max: 5,
+    connectionTimeoutMillis: 15000,
+  };
+}
+
 function createPgStorage() {
   let Pool;
   try {
@@ -160,11 +185,7 @@ function createPgStorage() {
   } catch (e) {
     throw new Error('Le module "pg" est introuvable. Lance « npm install » (il est dans package.json).');
   }
-  const pool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
-    max: 5,
-  });
+  const pool = new Pool(pgConfig());
   pool.on('error', (e) => console.error('PostgreSQL :', e.message));
 
   const insertMessage = (m) =>
@@ -306,6 +327,16 @@ const findByPseudo = (p) => db.users.find((u) => u.pseudo.toLowerCase() === p.to
 function cleanPseudo(x) {
   const p = String(x || '').trim().replace(/\s+/g, ' ');
   return p.length >= 2 && p.length <= 20 ? p : '';
+}
+
+function normalizeAvatar(a) {
+  if (typeof a !== 'string') return a;
+  a = a.trim();
+  // lien GitHub "blob" => on force le fichier brut pour que ce soit une vraie image
+  if (/^https?:\/\/github\.com\/.+\/blob\//i.test(a) && !/[?&]raw=true/i.test(a)) {
+    a += (a.includes('?') ? '&' : '?') + 'raw=true';
+  }
+  return a;
 }
 
 function validAvatar(a) {
@@ -574,7 +605,17 @@ app.post('/api/logout', auth, (req, res) => {
 app.get('/api/me', auth, (req, res) => res.json(meFull(req.userId)));
 
 app.put('/api/me', auth, (req, res) => {
-  const { pseudo, avatar, pin, appearance } = req.body || {};
+  try {
+    return updateMe(req, res);
+  } catch (e) {
+    console.error('Réglages :', e);
+    return res.status(500).json({ error: 'Erreur du serveur, réessaie.' });
+  }
+});
+
+function updateMe(req, res) {
+  const { pseudo, avatar: rawAvatar, pin, appearance } = req.body || {};
+  const avatar = normalizeAvatar(rawAvatar);
   const user = req.isAdmin ? null : getUser(req.userId);
   let newPseudo = null;
   let newPin = null;
@@ -636,7 +677,7 @@ app.put('/api/me', auth, (req, res) => {
   saveDb();
   if (visible) io.emit('contacts:update');
   res.json(meFull(req.userId));
-});
+}
 
 app.post('/api/me/reset-code', auth, (req, res) => {
   if (req.isAdmin) return res.status(403).json({ error: 'Non disponible pour l\'administrateur.' });
