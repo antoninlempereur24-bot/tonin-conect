@@ -16,9 +16,71 @@
     unread: {},         // id contact -> nombre de non lus
     online: new Set(),
     socket: null,
-    avatarValue: '',    // valeur d'avatar en cours d'édition dans le profil
+    avatarValue: '',    // avatar en cours d'édition dans les réglages
     unreadInit: false,
+    appearance: { theme: 'dark', accent: 'violet' },
   };
+
+  /* ---------------- Apparence (thème + couleur) ---------------- */
+
+  const ACCENTS = {
+    violet: ['#7c5cff', '#4da3ff'],
+    ocean: ['#2f80ed', '#2dd4bf'],
+    menthe: ['#10b981', '#84cc16'],
+    rose: ['#ec4899', '#f97316'],
+    orange: ['#f59e0b', '#ef4444'],
+  };
+
+  function markAppearanceButtons() {
+    document.querySelectorAll('[data-theme-choice]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.themeChoice === state.appearance.theme);
+    });
+    document.querySelectorAll('.swatch').forEach((b) => {
+      b.classList.toggle('active', b.dataset.accent === state.appearance.accent);
+    });
+  }
+
+  function applyAppearance(a) {
+    const ap = { theme: 'dark', accent: 'violet', ...(a || {}) };
+    if (!['dark', 'light'].includes(ap.theme)) ap.theme = 'dark';
+    if (!ACCENTS[ap.accent]) ap.accent = 'violet';
+    const root = document.documentElement;
+    root.dataset.theme = ap.theme;
+    root.style.setProperty('--accent', ACCENTS[ap.accent][0]);
+    root.style.setProperty('--accent-2', ACCENTS[ap.accent][1]);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = ap.theme === 'light' ? '#f2f4fb' : '#0f1220';
+    state.appearance = ap;
+    try { localStorage.setItem('tc_appearance', JSON.stringify(ap)); } catch (e) { /* ignore */ }
+    markAppearanceButtons();
+  }
+
+  function setAppearance(partial) {
+    const ap = { ...state.appearance, ...partial };
+    applyAppearance(ap);
+    if (state.token && state.me) {
+      state.me.appearance = ap;
+      api('/api/me', 'PUT', { appearance: ap }).catch(() => {});
+    }
+  }
+
+  // Pastilles de couleur
+  Object.keys(ACCENTS).forEach((key) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'swatch';
+    b.dataset.accent = key;
+    b.title = key;
+    b.style.background = `linear-gradient(135deg, ${ACCENTS[key][0]}, ${ACCENTS[key][1]})`;
+    b.addEventListener('click', () => setAppearance({ accent: key }));
+    $('accent-row').appendChild(b);
+  });
+  document.querySelectorAll('[data-theme-choice]').forEach((b) => {
+    b.addEventListener('click', () => setAppearance({ theme: b.dataset.themeChoice }));
+  });
+
+  // Applique tout de suite le dernier thème connu (évite le flash)
+  try { applyAppearance(JSON.parse(localStorage.getItem('tc_appearance'))); } catch (e) { applyAppearance(null); }
 
   /* ---------------- Utilitaires ---------------- */
 
@@ -110,6 +172,48 @@
     state.unread[id] = 0;
   }
 
+  const previewText = (m) =>
+    m.image ? (m.text ? '📷 ' + m.text : '📷 Photo') : m.text;
+
+  /* ---------------- Images (redimensionnement) ---------------- */
+
+  function readImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Lecture du fichier impossible.'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Image illisible.'));
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderToDataUrl(img, { max, square, quality }) {
+    let sw = img.width, sh = img.height, sx = 0, sy = 0, w, h;
+    if (square) {
+      const m = Math.min(sw, sh);
+      sx = (sw - m) / 2;
+      sy = (sh - m) / 2;
+      sw = sh = m;
+      w = h = max;
+    } else {
+      const k = Math.min(1, max / Math.max(sw, sh));
+      w = Math.round(sw * k);
+      h = Math.round(sh * k);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', quality);
+  }
+
   /* ---------------- Connexion ---------------- */
 
   const authError = (m) => { $('auth-error').textContent = m || ''; };
@@ -161,6 +265,7 @@
   async function startApp() {
     $('auth-screen').classList.add('hidden');
     $('app-screen').classList.remove('hidden');
+    applyAppearance(state.me.appearance);
     renderMe();
     connectSocket();
     await loadContacts();
@@ -185,8 +290,7 @@
     $('me-name').textContent = me.pseudo;
     $('me-sub').textContent = me.isAdmin ? 'Compte administrateur' : 'Connecté';
     $('btn-admin').classList.toggle('hidden', !me.isAdmin);
-    $('btn-profile').classList.toggle('hidden', me.isAdmin);
-    $('btn-add').classList.toggle('hidden', me.isAdmin);
+    $('btn-add').classList.toggle('hidden', !!me.isAdmin);
   }
 
   /* ---------------- Socket.io ---------------- */
@@ -215,11 +319,14 @@
     });
 
     socket.on('contacts:update', async () => {
-      await loadContacts();
-      if (state.me && !state.me.isAdmin) {
-        try { state.me = await api('/api/me'); renderMe(); } catch (e) { /* ignore */ }
-      }
-      if (!$('modal-admin').classList.contains('hidden')) loadAdminUsers();
+      try {
+        await loadContacts();
+        if (state.me && !state.me.isAdmin) {
+          state.me = await api('/api/me');
+          renderMe();
+        }
+        if (!$('modal-admin').classList.contains('hidden')) loadAdminUsers();
+      } catch (e) { /* ignore */ }
     });
 
     socket.on('message', async (msg) => {
@@ -309,7 +416,7 @@
       const prev = document.createElement('div');
       prev.className = 'preview';
       prev.textContent = c.last
-        ? (c.last.from === state.me.id ? 'Vous : ' : '') + c.last.text
+        ? (c.last.from === state.me.id ? 'Vous : ' : '') + previewText(c.last)
         : 'Aucun message';
 
       meta.appendChild(name);
@@ -376,6 +483,7 @@
 
   function appendMessage(m) {
     const box = $('messages');
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
     const day = fmtDate(m.ts);
     if (box.dataset.lastDay !== day) {
       const sep = document.createElement('div');
@@ -388,7 +496,26 @@
     row.className = 'msg ' + (m.from === state.me.id ? 'mine' : 'theirs');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.textContent = m.text;
+
+    if (m.image) {
+      bubble.classList.add('has-img');
+      const img = document.createElement('img');
+      img.className = 'chat-img';
+      img.alt = 'Photo';
+      img.loading = 'lazy';
+      img.src = m.image;
+      img.addEventListener('load', () => { if (stick) scrollBottom(); });
+      img.addEventListener('click', () => {
+        $('photo-full').src = m.image;
+        openModal('modal-photo');
+      });
+      bubble.appendChild(img);
+    }
+    if (m.text) {
+      const txt = document.createElement('div');
+      txt.textContent = m.text;
+      bubble.appendChild(txt);
+    }
     const t = document.createElement('time');
     t.textContent = fmtTime(m.ts);
     bubble.appendChild(t);
@@ -417,6 +544,28 @@
       if (res && res.error) toast(res.error);
     });
     $('msg-input').value = '';
+  });
+
+  // Envoi de photos
+  $('btn-photo').addEventListener('click', () => $('photo-input').click());
+  $('photo-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file || !state.current) return;
+    const to = state.current;
+    try {
+      toast('Envoi de la photo…');
+      const img = await readImage(file);
+      const data = renderToDataUrl(img, { max: 1280, quality: 0.82 });
+      const { url } = await api('/api/upload', 'POST', { data });
+      const text = $('msg-input').value.trim();
+      $('msg-input').value = '';
+      state.socket.emit('message:send', { to, text, image: url }, (res) => {
+        if (res && res.error) toast(res.error);
+      });
+    } catch (err) {
+      toast(err.message);
+    }
   });
 
   /* ---------------- Modales ---------------- */
@@ -460,123 +609,153 @@
     }
   });
 
-  /* ---------------- Profil ---------------- */
+  /* ---------------- Réglages (utilisateur ET administrateur) ---------------- */
 
-  function renderProfilePreview() {
-    const holder = $('profile-preview');
+  function renderSettingsPreview() {
+    const holder = $('settings-preview');
     holder.innerHTML = '';
+    const isAdmin = !!state.me.isAdmin;
     holder.appendChild(
-      makeAvatar({ pseudo: $('profile-pseudo').value || state.me.pseudo, avatar: state.avatarValue }, true)
+      makeAvatar(
+        {
+          pseudo: isAdmin ? 'Administrateur' : ($('settings-pseudo').value || state.me.pseudo),
+          avatar: state.avatarValue,
+          isAdmin,
+        },
+        true
+      )
     );
   }
 
-  $('btn-profile').addEventListener('click', async () => {
-    $('profile-error').textContent = '';
+  $('btn-settings').addEventListener('click', async () => {
+    $('settings-error').textContent = '';
     try {
       state.me = await api('/api/me');
     } catch (err) {
       return toast(err.message);
     }
     const me = state.me;
-    $('profile-pseudo').value = me.pseudo;
-    $('profile-pin').value = me.pin;
-    $('profile-pin').type = 'password';
-    $('profile-share').textContent = me.shareCode;
+    const isAdmin = !!me.isAdmin;
+
+    $('field-pseudo').classList.toggle('hidden', isAdmin);
+    $('share-section').classList.toggle('hidden', isAdmin);
+
+    const code = $('settings-code');
+    code.type = 'password';
+    if (isAdmin) {
+      $('code-label').textContent = 'Nouveau code administrateur (laisser vide pour ne pas changer)';
+      code.value = '';
+      code.maxLength = 40;
+      code.placeholder = 'Nouveau code (4 caractères minimum)';
+      code.inputMode = 'text';
+    } else {
+      $('code-label').textContent = 'Code secret (PIN à 4 chiffres)';
+      code.value = me.pin || '';
+      code.maxLength = 4;
+      code.placeholder = '••••';
+      code.inputMode = 'numeric';
+      $('settings-pseudo').value = me.pseudo;
+      $('settings-share').textContent = me.shareCode;
+    }
+
     state.avatarValue = me.avatar || '';
-    $('profile-avatar-url').value = /^https?:/i.test(state.avatarValue) ? state.avatarValue : '';
-    $('profile-avatar-url').placeholder = state.avatarValue.startsWith('data:')
-      ? '(image importée)'
+    $('settings-avatar-url').value = /^https?:/i.test(state.avatarValue) ? state.avatarValue : '';
+    $('settings-avatar-url').placeholder = state.avatarValue.startsWith('data:')
+      ? '(photo importée)'
       : 'https://…';
-    renderProfilePreview();
-    openModal('modal-profile');
+    renderSettingsPreview();
+    markAppearanceButtons();
+    openModal('modal-settings');
   });
 
-  $('profile-pseudo').addEventListener('input', renderProfilePreview);
-  $('profile-pin').addEventListener('input', (e) => {
-    e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
+  $('settings-pseudo').addEventListener('input', renderSettingsPreview);
+
+  $('settings-code').addEventListener('input', (e) => {
+    if (!state.me.isAdmin) e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
   });
-  $('profile-pin-toggle').addEventListener('click', () => {
-    const i = $('profile-pin');
+  $('settings-code-toggle').addEventListener('click', () => {
+    const i = $('settings-code');
     i.type = i.type === 'password' ? 'text' : 'password';
   });
 
-  $('profile-avatar-url').addEventListener('input', (e) => {
+  $('settings-avatar-url').addEventListener('input', (e) => {
     state.avatarValue = e.target.value.trim();
-    renderProfilePreview();
+    renderSettingsPreview();
   });
 
-  $('profile-avatar-clear').addEventListener('click', () => {
+  $('settings-avatar-clear').addEventListener('click', () => {
     state.avatarValue = '';
-    $('profile-avatar-url').value = '';
-    $('profile-avatar-url').placeholder = 'https://…';
-    renderProfilePreview();
+    $('settings-avatar-url').value = '';
+    $('settings-avatar-url').placeholder = 'https://…';
+    renderSettingsPreview();
   });
 
-  // Import d'une image : redimensionnée en 160x160 pour rester légère
-  $('profile-avatar-file').addEventListener('change', (e) => {
+  $('settings-avatar-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const size = 160;
-        const canvas = document.createElement('canvas');
-        canvas.width = canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        const min = Math.min(img.width, img.height);
-        ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size);
-        state.avatarValue = canvas.toDataURL('image/jpeg', 0.85);
-        $('profile-avatar-url').value = '';
-        $('profile-avatar-url').placeholder = '(image importée)';
-        renderProfilePreview();
-      };
-      img.onerror = () => toast('Image illisible.');
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    if (!file) return;
+    try {
+      const img = await readImage(file);
+      state.avatarValue = renderToDataUrl(img, { max: 160, square: true, quality: 0.85 });
+      $('settings-avatar-url').value = '';
+      $('settings-avatar-url').placeholder = '(photo importée)';
+      renderSettingsPreview();
+    } catch (err) {
+      toast(err.message);
+    }
   });
 
-  $('profile-share-copy').addEventListener('click', async () => {
+  $('settings-share-copy').addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText($('profile-share').textContent);
+      await navigator.clipboard.writeText($('settings-share').textContent);
       toast('Code de partage copié !');
     } catch (e) {
       toast('Copie impossible, note le code manuellement.');
     }
   });
 
-  $('profile-share-reset').addEventListener('click', async () => {
+  $('settings-share-reset').addEventListener('click', async () => {
     if (!confirm('Réinitialiser ton code de partage ? L\'ancien code ne fonctionnera plus.')) return;
     try {
       const r = await api('/api/me/reset-code', 'POST');
       state.me.shareCode = r.shareCode;
-      $('profile-share').textContent = r.shareCode;
+      $('settings-share').textContent = r.shareCode;
       toast('Nouveau code de partage : ' + r.shareCode);
     } catch (err) {
-      $('profile-error').textContent = err.message;
+      $('settings-error').textContent = err.message;
     }
   });
 
-  $('profile-save').addEventListener('click', async () => {
-    $('profile-error').textContent = '';
-    const pin = $('profile-pin').value;
-    if (!/^\d{4}$/.test(pin)) {
-      $('profile-error').textContent = 'Le code PIN doit contenir exactement 4 chiffres.';
-      return;
+  $('settings-save').addEventListener('click', async () => {
+    $('settings-error').textContent = '';
+    const isAdmin = !!state.me.isAdmin;
+    const code = $('settings-code').value;
+    const body = { avatar: state.avatarValue, appearance: state.appearance };
+
+    if (isAdmin) {
+      if (code !== '') {
+        if (code.length < 4) {
+          $('settings-error').textContent = 'Le code administrateur doit faire au moins 4 caractères.';
+          return;
+        }
+        body.pin = code;
+      }
+    } else {
+      if (!/^\d{4}$/.test(code)) {
+        $('settings-error').textContent = 'Le code PIN doit contenir exactement 4 chiffres.';
+        return;
+      }
+      body.pin = code;
+      body.pseudo = $('settings-pseudo').value;
     }
+
     try {
-      state.me = await api('/api/me', 'PUT', {
-        pseudo: $('profile-pseudo').value,
-        avatar: state.avatarValue,
-        pin,
-      });
+      state.me = await api('/api/me', 'PUT', body);
       renderMe();
-      closeModal('modal-profile');
-      toast('Profil enregistré !');
+      closeModal('modal-settings');
+      toast(isAdmin && body.pin ? 'Réglages enregistrés. Nouveau code administrateur actif.' : 'Réglages enregistrés !');
     } catch (err) {
-      $('profile-error').textContent = err.message;
+      $('settings-error').textContent = err.message;
     }
   });
 
@@ -589,12 +768,20 @@
   $('admin-refresh').addEventListener('click', loadAdminUsers);
 
   async function loadAdminUsers() {
-    let users;
+    let data;
     try {
-      users = await api('/api/admin/users');
+      data = await api('/api/admin/users');
     } catch (err) {
       return toast(err.message);
     }
+    const users = data.users;
+
+    const info = $('admin-storage');
+    info.textContent = data.storage.warning
+      ? '⚠️ Stockage : ' + data.storage.label + ' — ton hébergeur semble effacer le disque ! Configure DATABASE_URL (PostgreSQL) ou DATA_DIR.'
+      : '💾 Stockage : ' + data.storage.label;
+    info.classList.toggle('warn', !!data.storage.warning);
+
     $('admin-count').textContent = users.length;
     const body = $('admin-table').querySelector('tbody');
     body.innerHTML = '';
@@ -677,6 +864,11 @@
   /* ---------------- Démarrage ---------------- */
 
   (async function init() {
+    // Application installable (iPhone, Samsung, ordinateur)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
     const pending = sessionStorage.getItem('tc_msg');
     if (pending) {
       sessionStorage.removeItem('tc_msg');

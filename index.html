@@ -2,8 +2,20 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Tonin Conect</title>
+
+  <!-- Icône de l'application (onglet navigateur, écran d'accueil iPhone / Samsung) -->
+  <link rel="icon" type="image/png" href="/icon.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0f1220" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Tonin Conect" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -11,7 +23,7 @@
   <!-- ====================== CONNEXION ====================== -->
   <section id="auth-screen" class="screen">
     <div class="auth-card">
-      <div class="logo">💬</div>
+      <div class="logo"><img src="/icon.png" alt="Tonin Conect" onerror="this.replaceWith('💬')" /></div>
       <h1>Tonin Conect</h1>
       <p class="tagline">La messagerie simple et instantanée</p>
 
@@ -50,7 +62,7 @@
         </div>
         <div class="side-actions">
           <button id="btn-admin" class="icon-btn hidden" title="Panneau administrateur">🛡️</button>
-          <button id="btn-profile" class="icon-btn" title="Mon profil">⚙️</button>
+          <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
           <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
         </div>
       </header>
@@ -65,7 +77,7 @@
 
     <main id="chat">
       <div id="chat-empty">
-        <div class="logo big">💬</div>
+        <div class="logo big"><img src="/icon.png" alt="" onerror="this.replaceWith('💬')" /></div>
         <h2>Tonin Conect</h2>
         <p>Choisis un contact pour commencer à discuter.</p>
       </div>
@@ -81,6 +93,8 @@
         </header>
         <div id="messages"></div>
         <form id="send-form" autocomplete="off">
+          <button id="btn-photo" class="icon-btn" type="button" title="Envoyer une photo">📷</button>
+          <input id="photo-input" type="file" accept="image/*" hidden />
           <input id="msg-input" type="text" maxlength="2000" placeholder="Écris un message…" />
           <button class="btn primary" type="submit">Envoyer</button>
         </form>
@@ -88,49 +102,61 @@
     </main>
   </section>
 
-  <!-- ====================== MODALE : PROFIL ====================== -->
-  <div id="modal-profile" class="modal hidden">
+  <!-- ====================== MODALE : RÉGLAGES ====================== -->
+  <div id="modal-settings" class="modal hidden">
     <div class="modal-box">
       <button class="modal-close" data-close>✕</button>
-      <h2>Mon profil</h2>
+      <h2>Réglages</h2>
 
+      <h3 class="section-title">Profil</h3>
       <div class="profile-photo">
-        <div id="profile-preview"></div>
+        <div id="settings-preview"></div>
         <div class="photo-fields">
           <label>Photo de profil (URL d'image)
-            <input id="profile-avatar-url" type="url" placeholder="https://…" />
+            <input id="settings-avatar-url" type="url" placeholder="https://…" />
           </label>
           <div class="row">
-            <label class="btn small file-btn">📁 Importer une image
-              <input id="profile-avatar-file" type="file" accept="image/*" hidden />
+            <label class="btn small file-btn">📁 Importer une photo
+              <input id="settings-avatar-file" type="file" accept="image/*" hidden />
             </label>
-            <button id="profile-avatar-clear" class="btn small" type="button">Retirer la photo</button>
+            <button id="settings-avatar-clear" class="btn small" type="button">Retirer</button>
           </div>
         </div>
       </div>
 
-      <label>Pseudo visible par les autres
-        <input id="profile-pseudo" type="text" maxlength="20" />
+      <label id="field-pseudo">Pseudo visible par les autres
+        <input id="settings-pseudo" type="text" maxlength="20" />
       </label>
 
-      <label>Code secret (PIN à 4 chiffres)
+      <h3 class="section-title">Sécurité</h3>
+      <label><span id="code-label">Code secret (PIN à 4 chiffres)</span>
         <div class="row">
-          <input id="profile-pin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" />
-          <button id="profile-pin-toggle" class="btn small" type="button">👁</button>
+          <input id="settings-code" type="password" autocomplete="new-password" />
+          <button id="settings-code-toggle" class="btn small" type="button">👁</button>
         </div>
       </label>
 
-      <div class="share-box">
-        <small>Ton code de partage (donne-le à un ami pour qu'il t'ajoute)</small>
-        <div class="row">
-          <strong id="profile-share" class="share-code">----</strong>
-          <button id="profile-share-copy" class="btn small" type="button">Copier</button>
+      <div id="share-section">
+        <div class="share-box">
+          <small>Ton code de partage (donne-le à un ami pour qu'il t'ajoute)</small>
+          <div class="row">
+            <strong id="settings-share" class="share-code">----</strong>
+            <button id="settings-share-copy" class="btn small" type="button">Copier</button>
+          </div>
+          <button id="settings-share-reset" class="btn small danger" type="button">🔄 Réinitialiser le code de partage</button>
         </div>
-        <button id="profile-share-reset" class="btn small danger" type="button">🔄 Réinitialiser le code de partage</button>
       </div>
 
-      <p id="profile-error" class="error"></p>
-      <button id="profile-save" class="btn primary" type="button">Enregistrer</button>
+      <h3 class="section-title">Apparence</h3>
+      <div class="theme-row">
+        <button class="btn theme-btn" type="button" data-theme-choice="dark">🌙 Sombre</button>
+        <button class="btn theme-btn" type="button" data-theme-choice="light">☀️ Clair</button>
+      </div>
+      <small class="hint-line">Couleur de l'application</small>
+      <div id="accent-row" class="accent-row"></div>
+
+      <p id="settings-error" class="error"></p>
+      <button id="settings-save" class="btn primary" type="button">Enregistrer</button>
     </div>
   </div>
 
@@ -155,6 +181,7 @@
       <button class="modal-close" data-close>✕</button>
       <h2>🛡️ Compte administrateur</h2>
       <p class="hint"><span id="admin-count">0</span> compte(s) créé(s). Clique sur « Discuter » pour écrire à quelqu'un.</p>
+      <p id="admin-storage" class="storage-info"></p>
       <div class="table-wrap">
         <table id="admin-table">
           <thead>
@@ -173,6 +200,12 @@
       </div>
       <button id="admin-refresh" class="btn small" type="button">↻ Actualiser</button>
     </div>
+  </div>
+
+  <!-- ====================== VISIONNEUSE DE PHOTO ====================== -->
+  <div id="modal-photo" class="modal lightbox hidden">
+    <button class="modal-close" data-close>✕</button>
+    <img id="photo-full" alt="Photo" />
   </div>
 
   <div id="toast"></div>
