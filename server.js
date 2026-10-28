@@ -56,6 +56,8 @@ const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'im
 
 const ICON_URL =
   'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20coco%20.jpg?raw=true';
+// Change ce numéro à chaque fois que tu changes le logo : ça force les téléphones à le retélécharger
+const ICON_VERSION = '3';
 
 /* ------------------------- Base de données (mémoire) ------------------------- */
 
@@ -524,15 +526,16 @@ async function getIcon() {
       if (type) return { buf, type };
     }
   }
-  if (iconCache) return iconCache;
+  // le cache mémoire expire au bout de 5 min (avant, l'ancien logo restait tant que le serveur ne redémarrait pas)
+  if (iconCache && Date.now() - iconCache.at < 5 * 60 * 1000) return iconCache;
   if (typeof fetch !== 'function') return null;
   try {
-    const r = await fetch(ICON_URL);
+    const r = await fetch(ICON_URL + '&t=' + Date.now());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const buf = Buffer.from(await r.arrayBuffer());
     const type = sniffImage(buf);
     if (!type) throw new Error('le fichier n\'est pas une image PNG/JPEG');
-    iconCache = { buf, type };
+    iconCache = { buf, type, at: Date.now() };
     return iconCache;
   } catch (e) {
     console.error('Icône non téléchargée :', e.message);
@@ -546,7 +549,7 @@ app.get(
     const icon = await getIcon();
     if (!icon) return res.redirect(ICON_URL);
     res.set('Content-Type', icon.type);
-    res.set('Cache-Control', 'public, max-age=3600');
+    res.set('Cache-Control', 'no-cache');
     res.send(icon.buf);
   }
 );
@@ -554,7 +557,9 @@ app.get(
 app.get('/manifest.webmanifest', async (q, r) => {
   const icon = await getIcon();
   const type = icon ? icon.type : 'image/png';
+  r.set('Cache-Control', 'no-cache');
   r.type('application/manifest+json').json({
+    id: '/',
     name: 'Tonin Conect',
     short_name: 'Tonin Conect',
     description: 'Messagerie instantanée Tonin Conect',
@@ -566,8 +571,11 @@ app.get('/manifest.webmanifest', async (q, r) => {
     theme_color: '#0f1220',
     lang: 'fr',
     icons: [
-      { src: '/icon-192.png?v=2', sizes: '192x192', type, purpose: 'any' },
-      { src: '/icon-512.png?v=2', sizes: '512x512', type, purpose: 'any' },
+      { src: '/icon-192.png?v=' + ICON_VERSION, sizes: '192x192', type, purpose: 'any' },
+      { src: '/icon-512.png?v=' + ICON_VERSION, sizes: '512x512', type, purpose: 'any' },
+      // "maskable" = l'image remplit tout le carré, sans bord blanc/noir ajouté par Android
+      { src: '/icon-192.png?v=' + ICON_VERSION, sizes: '192x192', type, purpose: 'maskable' },
+      { src: '/icon-512.png?v=' + ICON_VERSION, sizes: '512x512', type, purpose: 'maskable' },
     ],
   });
 });
