@@ -114,7 +114,7 @@
     try { data = await res.json(); } catch (e) { /* pas de JSON */ }
     if (!res.ok) {
       if (res.status === 401 && state.token && path !== '/api/login' && path !== '/api/admin/login') {
-        forceLogout('Session expirée, reconnecte-toi.');
+        forceLogout(data.error || 'Session expirée, reconnecte-toi.');
       }
       throw new Error(data.error || 'Erreur ' + res.status);
     }
@@ -302,7 +302,6 @@
     $('me-sub').textContent = me.isAdmin ? 'Compte administrateur' : 'Connecté';
     $('btn-admin').classList.toggle('hidden', !me.isAdmin);
     $('btn-add').classList.toggle('hidden', !!me.isAdmin);
-    $('btn-reports').classList.toggle('hidden', !me.isAdmin);
   }
 
   /* ---------------- Socket.io ---------------- */
@@ -314,6 +313,7 @@
 
     socket.on('connect_error', (err) => {
       if (err && err.message === 'unauthorized') forceLogout('Session expirée, reconnecte-toi.');
+      if (err && /^banned:/.test(err.message)) forceLogout(err.message.slice(7));
     });
 
     socket.on('kicked', () => forceLogout('Ton compte a été supprimé par l\'administrateur.'));
@@ -459,7 +459,7 @@
     holder.innerHTML = '';
     holder.appendChild(avatarWithDot(c));
     $('chat-name').textContent = c.name;
-    $('btn-call').classList.toggle('hidden', !!c.isAdmin || !!state.me.isAdmin);
+    $('btn-call').classList.toggle('hidden', !!c.isAdmin);
     $('chat-status').textContent = c.isAdmin
       ? 'Compte administrateur'
       : state.online.has(c.id) ? 'En ligne' : 'Hors ligne';
@@ -798,10 +798,7 @@
 
   /* ---------------- Administration ---------------- */
 
-  $('btn-admin').addEventListener('click', () => {
-    openModal('modal-admin');
-    loadAdminUsers();
-  });
+  $('btn-admin').addEventListener('click', () => { refreshReportsBadge(); openModal('modal-hub'); });
   $('admin-refresh').addEventListener('click', loadAdminUsers);
 
   async function loadAdminUsers() {
@@ -865,6 +862,12 @@
       const st = document.createElement('span');
       st.className = u.online ? 'status-on' : 'status-off';
       st.textContent = u.online ? '● En ligne' : '○ Hors ligne';
+      if (u.bannedUntil) {
+        st.className = 'status-off';
+        st.style.color = 'var(--danger)';
+        st.textContent = u.bannedUntil >= 32503680000000 ? '⛔ Banni définitivement' : '⛔ Banni jusqu\'au ' + fmtDate(u.bannedUntil) + ' ' + fmtTime(u.bannedUntil);
+      }
+      if (u.channelBan) st.textContent += ' · 🚫 chaînes';
       cell(st);
 
       const actions = document.createElement('div');
@@ -892,6 +895,25 @@
         }
       });
       actions.appendChild(chat);
+      const ban = document.createElement('button');
+      ban.className = 'btn small' + (u.bannedUntil ? '' : ' danger');
+      ban.textContent = u.bannedUntil ? 'Débannir' : 'Bannir';
+      ban.addEventListener('click', async () => {
+        if (!u.bannedUntil) return openBan(u.id, u.pseudo, loadAdminUsers);
+        try { await api('/api/admin/users/' + u.id + '/unban', 'POST'); toast('Compte débanni.'); loadAdminUsers(); }
+        catch (err) { toast(err.message); }
+      });
+      actions.appendChild(ban);
+      if (u.channelBan) {
+        const cb = document.createElement('button');
+        cb.className = 'btn small';
+        cb.textContent = 'Autoriser les chaînes';
+        cb.addEventListener('click', async () => {
+          try { await api('/api/admin/users/' + u.id + '/channel-ban', 'POST', { value: false }); toast('Chaînes autorisées.'); loadAdminUsers(); }
+          catch (err) { toast(err.message); }
+        });
+        actions.appendChild(cb);
+      }
       actions.appendChild(del);
       cell(actions);
 
@@ -909,11 +931,12 @@
 
   function showTab(tab) {
     state.tab = tab;
-    ['chats', 'stories', 'calls'].forEach((t) => {
+    ['chats', 'stories', 'channels', 'calls'].forEach((t) => {
       $('pane-' + t).classList.toggle('hidden', t !== tab);
       document.querySelector('[data-tab="' + t + '"]').classList.toggle('active', t === tab);
     });
     if (tab === 'stories') loadStories().catch((e) => toast(e.message));
+    if (tab === 'channels') loadChannels().catch((e) => toast(e.message));
     if (tab === 'calls') loadCalls();
   }
   document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
@@ -933,6 +956,12 @@
   };
 
   function bindExtraSocket(socket) {
+    socket.on('banned', ({ message }) => forceLogout(message));
+    socket.on('channels:update', () => {
+      if (!state.me || state.me.isAdmin) return;
+      loadChannels().catch(() => {});
+      if (!$('modal-channel').classList.contains('hidden') && state.chan) loadChanPosts(state.chan).catch(() => {});
+    });
     socket.on('stories:update', () => {
       if (state.me && !state.me.isAdmin) loadStories().catch(() => {});
     });
@@ -1370,7 +1399,7 @@
   async function startCall(id) {
     if (state.call) return toast('Un appel est déjà en cours.');
     const c = state.contacts.find((x) => x.id === id);
-    if (!c || c.isAdmin || state.me.isAdmin) return;
+    if (!c || c.isAdmin) return;
     const stream = await getMic();
     if (!stream) return;
     state.socket.emit('call:invite', { to: id }, (res) => {
@@ -1402,9 +1431,11 @@
   /* ---------------- Signalements (administrateur) ---------------- */
 
   function setReportsBadge(n) {
-    const b = $('reports-badge');
-    b.textContent = n;
-    b.classList.toggle('hidden', !n);
+    ['reports-badge', 'hub-reports-badge'].forEach((id) => {
+      const b = $(id);
+      b.textContent = n;
+      b.classList.toggle('hidden', !n);
+    });
   }
 
   async function refreshReportsBadge() {
@@ -1415,7 +1446,6 @@
     } catch (e) { return null; }
   }
 
-  $('btn-reports').addEventListener('click', () => { openModal('modal-reports'); loadReports(); });
 
   async function loadReports() {
     const d = await refreshReportsBadge();
@@ -1457,11 +1487,12 @@
         act(() => api('/api/admin/reports/' + r.id + '/warn', 'POST', { text }), 'Avertissement envoyé.');
       });
       mk('🙈 Ne rien faire', '', () => act(() => api('/api/admin/reports/' + r.id + '/dismiss', 'POST'), 'Signalement classé.'));
+      const banB = mk('⛔ Bannir', 'danger', () => openBan(r.targetId, r.targetPseudo, () => loadReports(), r.id));
       const del = mk('🗑 Supprimer le compte', 'danger', () => {
         if (!confirm('Supprimer définitivement le compte « ' + r.targetPseudo + ' » et ses messages ?')) return;
         act(() => api('/api/admin/users/' + r.targetId, 'DELETE'), 'Compte supprimé.');
       });
-      if (!r.targetExists) { warn.disabled = true; del.disabled = true; }
+      if (!r.targetExists) { warn.disabled = true; del.disabled = true; banB.disabled = true; }
 
       [h, p, m, row].forEach((x) => card.appendChild(x));
       box.appendChild(card);
@@ -1475,10 +1506,453 @@
       done.slice(0, 30).forEach((r) => {
         const line = document.createElement('div');
         line.className = 'report-done';
-        line.textContent = (r.status === 'warned' ? '⚠️ Avertissement envoyé' : '✔ Classé sans suite') + ' · ' + r.targetName + ' (par ' + r.reporterName + ') · ' + fmtDate(r.ts);
+        line.textContent = ({ warned: '⚠️ Avertissement envoyé', banned: '⛔ Ban appliqué' }[r.status] || '✔ Classé sans suite') + ' · ' + r.targetName + ' (par ' + r.reporterName + ') · ' + fmtDate(r.ts);
         box.appendChild(line);
       });
     }
+  }
+
+  /* ---------------- Chaînes ---------------- */
+
+  state.channels = [];
+  state.chan = null;
+  state.chanEdit = null;
+  state.chanAvatar = '';
+
+  const chanUser = (c) => ({ pseudo: c.name, name: c.name, avatar: c.avatar });
+  const subsText = (n) => n + ' abonné' + (n > 1 ? 's' : '');
+
+  async function loadChannels() {
+    state.channels = await api('/api/channels');
+    renderChannels();
+    if (!$('modal-chan-reco').classList.contains('hidden')) renderReco();
+  }
+
+  function chanRow(c, extra, rank) {
+    const item = document.createElement('div');
+    item.className = 'contact';
+    if (rank) {
+      const r = document.createElement('span');
+      r.className = 'rank';
+      r.textContent = rank;
+      item.appendChild(r);
+    }
+    item.appendChild(makeAvatar(chanUser(c)));
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const n = document.createElement('div');
+    n.className = 'name';
+    n.textContent = c.name + (c.mine ? ' (ma chaîne)' : '');
+    const p = document.createElement('div');
+    p.className = 'preview';
+    p.textContent = subsText(c.subscribers) + (c.description ? ' · ' + c.description : '');
+    meta.appendChild(n);
+    meta.appendChild(p);
+    item.appendChild(meta);
+    if (extra) item.appendChild(extra);
+    item.addEventListener('click', () => openChannel(c.id));
+    return item;
+  }
+
+  function renderChannels() {
+    const box = $('channels-list');
+    box.innerHTML = '';
+    const list = state.channels.filter((c) => c.subscribed || c.mine).sort((a, b) => b.lastTs - a.lastTs);
+    if (!list.length) {
+      box.appendChild(emptyDiv('Tu ne suis aucune chaîne. Clique sur « Recommandations » pour en découvrir, ou crée la tienne.'));
+      return;
+    }
+    list.forEach((c) => box.appendChild(chanRow(c)));
+  }
+
+  async function toggleFollow(id) {
+    try {
+      await api('/api/channels/' + id + '/follow', 'POST');
+      await loadChannels();
+      if (state.chan === id && !$('modal-channel').classList.contains('hidden')) loadChanPosts(id);
+    } catch (err) { toast(err.message); }
+  }
+
+  function renderReco() {
+    const box = $('reco-list');
+    box.innerHTML = '';
+    if (!state.channels.length) { box.appendChild(emptyDiv('Aucune chaîne pour le moment. Crée la première !')); return; }
+    const top = document.createElement('div');
+    top.className = 'section-label';
+    top.textContent = '▲ Les plus suivies';
+    box.appendChild(top);
+    state.channels.forEach((c, i) => {
+      let extra = null;
+      if (!c.mine) {
+        extra = document.createElement('button');
+        extra.className = 'btn small' + (c.subscribed ? '' : ' primary');
+        extra.style.width = 'auto';
+        extra.style.margin = '0';
+        extra.textContent = c.subscribed ? '✓ Suivie' : 'Suivre';
+        extra.addEventListener('click', (e) => { e.stopPropagation(); toggleFollow(c.id); });
+      }
+      box.appendChild(chanRow(c, extra, i + 1));
+    });
+    const bottom = document.createElement('div');
+    bottom.className = 'section-label';
+    bottom.textContent = '▼ Les moins suivies';
+    box.appendChild(bottom);
+  }
+
+  $('btn-chan-reco').addEventListener('click', async () => {
+    try { await loadChannels(); } catch (e) { return toast(e.message); }
+    renderReco();
+    openModal('modal-chan-reco');
+  });
+
+  function renderPosts(box, posts, mine) {
+    box.innerHTML = '';
+    if (!posts.length) { box.appendChild(emptyDiv('Aucune publication pour le moment.')); return; }
+    posts.forEach((p) => {
+      const card = document.createElement('div');
+      card.className = 'chan-post';
+      if (p.image) {
+        const img = document.createElement('img');
+        img.className = 'chat-img';
+        img.alt = 'Photo';
+        img.loading = 'lazy';
+        img.src = p.image;
+        img.addEventListener('click', () => { $('photo-full').src = p.image; openModal('modal-photo'); });
+        card.appendChild(img);
+      }
+      if (p.video) {
+        const v = document.createElement('video');
+        v.className = 'chan-video';
+        v.src = p.video;
+        v.controls = true;
+        v.preload = 'metadata';
+        v.playsInline = true;
+        card.appendChild(v);
+      }
+      if (p.text) {
+        const t = document.createElement('p');
+        t.textContent = p.text;
+        card.appendChild(t);
+      }
+      const meta = document.createElement('small');
+      const when = document.createElement('span');
+      when.textContent = fmtDay(p.ts) + ' ' + fmtTime(p.ts);
+      meta.appendChild(when);
+      if (mine) {
+        const del = document.createElement('button');
+        del.className = 'icon-btn';
+        del.textContent = '🗑';
+        del.title = 'Supprimer cette publication';
+        del.addEventListener('click', async () => {
+          if (!confirm('Supprimer cette publication ?')) return;
+          try { await api('/api/channels/' + state.chan + '/posts/' + p.id, 'DELETE'); } catch (err) { toast(err.message); }
+        });
+        meta.appendChild(del);
+      }
+      card.appendChild(meta);
+      box.appendChild(card);
+    });
+  }
+
+  async function openChannel(id) {
+    state.chan = id;
+    closeModal('modal-chan-reco');
+    openModal('modal-channel');
+    try { await loadChanPosts(id); } catch (err) { toast(err.message); closeModal('modal-channel'); }
+  }
+
+  async function loadChanPosts(id) {
+    const d = await api('/api/channels/' + id + '/posts');
+    if (state.chan !== id) return;
+    const c = d.channel;
+    state.chanData = c;
+    const av = $('chan-avatar');
+    av.innerHTML = '';
+    av.appendChild(makeAvatar(chanUser(c), true));
+    $('chan-name').textContent = c.name;
+    $('chan-subs').textContent = subsText(c.subscribers);
+    $('chan-desc').textContent = c.description;
+    $('chan-desc').classList.toggle('hidden', !c.description);
+    const f = $('chan-follow');
+    f.classList.toggle('hidden', c.mine);
+    f.textContent = c.subscribed ? '✓ Abonné(e)' : 'S\'abonner';
+    $('chan-edit').classList.toggle('hidden', !c.mine);
+    $('chan-delete').classList.toggle('hidden', !c.mine);
+    $('chan-compose').classList.toggle('hidden', !c.mine);
+    const box = $('chan-posts');
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    renderPosts(box, d.posts, c.mine);
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  $('chan-follow').addEventListener('click', () => toggleFollow(state.chan));
+
+  $('chan-delete').addEventListener('click', async () => {
+    if (!confirm('Supprimer définitivement cette chaîne et toutes ses publications ?')) return;
+    try {
+      await api('/api/channels/' + state.chan, 'DELETE');
+      closeModal('modal-channel');
+      state.chan = null;
+      toast('Chaîne supprimée.');
+      loadChannels();
+    } catch (err) { toast(err.message); }
+  });
+
+  async function postToChannel(body) {
+    await api('/api/channels/' + state.chan + '/posts', 'POST', body);
+    await loadChanPosts(state.chan);
+    const box = $('chan-posts');
+    box.scrollTop = box.scrollHeight;
+  }
+
+  $('chan-compose').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = $('chan-text').value.trim();
+    if (!text) return;
+    try { await postToChannel({ text }); $('chan-text').value = ''; } catch (err) { toast(err.message); }
+  });
+
+  $('chan-photo-btn').addEventListener('click', () => $('chan-photo').click());
+  $('chan-photo').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      toast('Envoi de la photo…');
+      const img = await readImage(file);
+      const { url } = await api('/api/upload', 'POST', { data: renderToDataUrl(img, { max: 1280, quality: 0.82 }) });
+      const text = $('chan-text').value.trim();
+      await postToChannel({ text, image: url });
+      $('chan-text').value = '';
+    } catch (err) { toast(err.message); }
+  });
+
+  $('chan-video-btn').addEventListener('click', () => $('chan-video').click());
+  $('chan-video').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 30 * 1024 * 1024) return toast('Vidéo trop lourde (30 Mo maximum).');
+    try {
+      toast('Envoi de la vidéo… (peut prendre un moment)');
+      const res = await fetch('/api/upload-video', {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'video/mp4', Authorization: 'Bearer ' + state.token },
+        body: file,
+      });
+      let data = {};
+      try { data = await res.json(); } catch (x) { /* pas de JSON */ }
+      if (!res.ok) throw new Error(data.error || 'Envoi de la vidéo impossible.');
+      const text = $('chan-text').value.trim();
+      await postToChannel({ text, video: data.url });
+      $('chan-text').value = '';
+    } catch (err) { toast(err.message); }
+  });
+
+  function renderChanPreview() {
+    const h = $('chan-edit-preview');
+    h.innerHTML = '';
+    const n = $('chan-edit-name').value || '?';
+    h.appendChild(makeAvatar({ pseudo: n, name: n, avatar: state.chanAvatar }, true));
+  }
+
+  function openChanEdit(c) {
+    state.chanEdit = c ? c.id : null;
+    state.chanAvatar = c ? c.avatar : '';
+    $('chan-edit-title').textContent = c ? 'Modifier la chaîne' : 'Créer une chaîne';
+    $('chan-edit-name').value = c ? c.name : '';
+    $('chan-edit-desc').value = c ? c.description : '';
+    $('chan-edit-error').textContent = '';
+    renderChanPreview();
+    openModal('modal-chan-edit');
+  }
+
+  $('btn-chan-new').addEventListener('click', () => openChanEdit(null));
+  $('chan-edit').addEventListener('click', () => openChanEdit(state.chanData));
+  $('chan-edit-name').addEventListener('input', renderChanPreview);
+  $('chan-edit-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const img = await readImage(file);
+      const { url } = await api('/api/upload', 'POST', { data: renderToDataUrl(img, { max: 256, square: true, quality: 0.85 }) });
+      state.chanAvatar = url;
+      renderChanPreview();
+    } catch (err) { $('chan-edit-error').textContent = err.message; }
+  });
+
+  $('chan-edit-save').addEventListener('click', async () => {
+    $('chan-edit-error').textContent = '';
+    const body = { name: $('chan-edit-name').value, description: $('chan-edit-desc').value, avatar: state.chanAvatar };
+    try {
+      const c = state.chanEdit
+        ? await api('/api/channels/' + state.chanEdit, 'PUT', body)
+        : await api('/api/channels', 'POST', body);
+      closeModal('modal-chan-edit');
+      await loadChannels();
+      if (state.chanEdit) loadChanPosts(c.id); else openChannel(c.id);
+    } catch (err) { $('chan-edit-error').textContent = err.message; }
+  });
+
+  /* ---------------- Administration : hub, bans, sanctions ---------------- */
+
+  document.querySelectorAll('[data-hub]').forEach((b) => {
+    b.addEventListener('click', () => {
+      closeModal('modal-hub');
+      const k = b.dataset.hub;
+      if (k === 'reports') { openModal('modal-reports'); loadReports(); }
+      else if (k === 'users') { openModal('modal-admin'); loadAdminUsers(); }
+      else if (k === 'stories') { openModal('modal-admin-stories'); loadAdminStories(); }
+      else { openModal('modal-admin-channels'); loadAdminChannels(); }
+    });
+  });
+
+  function markBanPreset() {
+    document.querySelectorAll('.ban-presets .btn').forEach((b) => {
+      const v = b.dataset.min === 'perm' ? 'perm' : Number(b.dataset.min);
+      b.classList.toggle('active', state.ban && state.ban.sel === v);
+    });
+  }
+
+  function openBan(userId, name, done, reportId) {
+    state.ban = { userId, done, reportId, sel: 1440 };
+    $('ban-target').textContent = name;
+    $('ban-num').value = '';
+    $('ban-error').textContent = '';
+    markBanPreset();
+    openModal('modal-ban');
+  }
+
+  document.querySelectorAll('.ban-presets .btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      state.ban.sel = b.dataset.min === 'perm' ? 'perm' : Number(b.dataset.min);
+      $('ban-num').value = '';
+      markBanPreset();
+    });
+  });
+  $('ban-num').addEventListener('input', () => { state.ban.sel = null; markBanPreset(); });
+
+  $('ban-confirm').addEventListener('click', async () => {
+    const b = state.ban;
+    const body = { reportId: b.reportId };
+    if (b.sel === 'perm') body.permanent = true;
+    else body.minutes = b.sel || Number($('ban-num').value) * Number($('ban-unit').value);
+    if (!body.permanent && !(body.minutes >= 1)) { $('ban-error').textContent = 'Choisis une durée.'; return; }
+    try {
+      await api('/api/admin/users/' + b.userId + '/ban', 'POST', body);
+      closeModal('modal-ban');
+      toast('Compte banni.');
+      if (b.done) b.done();
+    } catch (err) { $('ban-error').textContent = err.message; }
+  });
+
+  function openSanction(o) {
+    state.sanction = o;
+    $('sanction-title').textContent = o.title;
+    $('sanction-sub').textContent = o.sub;
+    $('sanction-warn').checked = true;
+    $('sanction-text').disabled = false;
+    $('sanction-text').value = o.defaultText;
+    $('sanction-block-row').classList.toggle('hidden', !o.block);
+    $('sanction-block').checked = true;
+    $('sanction-error').textContent = '';
+    openModal('modal-sanction');
+  }
+  $('sanction-warn').addEventListener('change', (e) => { $('sanction-text').disabled = !e.target.checked; });
+  $('sanction-confirm').addEventListener('click', async () => {
+    const o = state.sanction;
+    const warn = $('sanction-warn').checked ? $('sanction-text').value.trim() : '';
+    try {
+      await o.onConfirm({ warn, block: o.block && $('sanction-block').checked });
+      closeModal('modal-sanction');
+    } catch (err) { $('sanction-error').textContent = err.message; }
+  });
+
+  function adminCard(parts) {
+    const card = document.createElement('div');
+    card.className = 'report-card';
+    parts.forEach((p) => card.appendChild(p));
+    return card;
+  }
+  const el = (tag, text, cls) => {
+    const x = document.createElement(tag);
+    if (text !== undefined) x.textContent = text;
+    if (cls) x.className = cls;
+    return x;
+  };
+  const btnEl = (label, cls, fn) => {
+    const b = el('button', label, 'btn small ' + cls);
+    b.type = 'button';
+    b.addEventListener('click', fn);
+    return b;
+  };
+
+  async function loadAdminStories() {
+    let list;
+    try { list = await api('/api/admin/stories'); } catch (e) { return toast(e.message); }
+    const box = $('admin-stories-list');
+    box.innerHTML = '';
+    if (!list.length) { box.appendChild(emptyDiv('Aucune story en ce moment.')); return; }
+    list.forEach((s) => {
+      const img = el('img', undefined, 'admin-thumb');
+      img.src = s.image;
+      img.alt = 'Story';
+      img.addEventListener('click', () => { $('photo-full').src = s.image; openModal('modal-photo'); });
+      const row = el('div', undefined, 'row');
+      row.appendChild(btnEl('🗑 Supprimer…', 'danger', () => openSanction({
+        title: 'Supprimer la story',
+        sub: 'Auteur : ' + s.authorName,
+        block: false,
+        defaultText: 'Attention ' + s.authorPseudo + ', une de vos stories a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.',
+        onConfirm: async ({ warn }) => {
+          await api('/api/admin/stories/' + s.id + '/delete', 'POST', { warn });
+          toast('Story supprimée.');
+          loadAdminStories();
+        },
+      })));
+      const parts = [el('strong', s.authorName), img];
+      if (s.text) parts.push(el('p', s.text));
+      parts.push(el('small', fmtDay(s.ts) + ' ' + fmtTime(s.ts) + ' · ❤️ ' + s.likes + ' · 👁 ' + s.views), row);
+      box.appendChild(adminCard(parts));
+    });
+  }
+
+  async function loadAdminChannels() {
+    let list;
+    try { list = await api('/api/admin/channels'); } catch (e) { return toast(e.message); }
+    const box = $('admin-channels-list');
+    box.innerHTML = '';
+    if (!list.length) { box.appendChild(emptyDiv('Aucune chaîne pour le moment.')); return; }
+    list.forEach((c) => {
+      const head = el('div', undefined, 'row');
+      head.appendChild(makeAvatar(chanUser(c)));
+      head.appendChild(el('strong', c.name));
+      const postsBox = el('div', undefined, 'chan-posts hidden');
+      const row = el('div', undefined, 'row');
+      row.appendChild(btnEl('👁 Voir le contenu', '', async () => {
+        if (!postsBox.childElementCount) {
+          try { const d = await api('/api/channels/' + c.id + '/posts'); renderPosts(postsBox, d.posts, false); }
+          catch (err) { return toast(err.message); }
+        }
+        postsBox.classList.toggle('hidden');
+      }));
+      row.appendChild(btnEl('🗑 Supprimer…', 'danger', () => openSanction({
+        title: 'Supprimer la chaîne « ' + c.name + ' »',
+        sub: 'Créée par ' + c.ownerName,
+        block: c.ownerExists,
+        defaultText: 'Attention ' + c.ownerPseudo + ', votre chaîne « ' + c.name + ' » a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.',
+        onConfirm: async ({ warn, block }) => {
+          await api('/api/admin/channels/' + c.id + '/delete', 'POST', { warn, block });
+          toast('Chaîne supprimée.');
+          loadAdminChannels();
+        },
+      })));
+      const parts = [head];
+      if (c.description) parts.push(el('p', c.description));
+      parts.push(el('small', 'Créée par ' + c.ownerName + ' · ' + fmtDate(c.createdAt) + ' · ' + subsText(c.subscribers) + ' · ' + c.posts + ' publication(s)'), row, postsBox);
+      box.appendChild(adminCard(parts));
+    });
   }
 
   /* ---------------- Démarrage ---------------- */

@@ -61,8 +61,7 @@
           <small id="me-sub"></small>
         </div>
         <div class="side-actions">
-          <button id="btn-reports" class="icon-btn hidden" title="Signalements">⚠️<span id="reports-badge" class="badge hidden">0</span></button>
-          <button id="btn-admin" class="icon-btn hidden" title="Panneau administrateur">🛡️</button>
+          <button id="btn-admin" class="icon-btn hidden" title="Administration">🛠️<span id="reports-badge" class="badge hidden">0</span></button>
           <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
           <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
         </div>
@@ -80,6 +79,14 @@
         <div id="stories-list" class="list-scroll"></div>
       </div>
 
+      <div id="pane-channels" class="pane hidden">
+        <div class="side-tools">
+          <button id="btn-chan-new" class="btn small primary" type="button">＋ Créer</button>
+          <button id="btn-chan-reco" class="btn small" type="button">✨ Recommandations</button>
+        </div>
+        <div id="channels-list" class="list-scroll"></div>
+      </div>
+
       <div id="pane-calls" class="pane hidden">
         <div id="calls-list" class="list-scroll"></div>
       </div>
@@ -87,6 +94,7 @@
       <nav id="tabbar">
         <button data-tab="chats" class="active"><span class="ico">💬</span>Discussions</button>
         <button data-tab="stories"><span class="ico">🟣</span>Stories<i id="stories-dot" class="tab-dot hidden"></i></button>
+        <button data-tab="channels"><span class="ico">📢</span>Chaînes</button>
         <button data-tab="calls"><span class="ico">📞</span>Appels</button>
       </nav>
     </aside>
@@ -201,7 +209,7 @@
   <div id="modal-admin" class="modal hidden">
     <div class="modal-box wide-box">
       <button class="modal-close" data-close>✕</button>
-      <h2>🛡️ Compte administrateur</h2>
+      <h2>👥 Comptes</h2>
       <p class="hint"><span id="admin-count">0</span> compte(s) créé(s). Clique sur « Discuter » pour écrire à quelqu'un.</p>
       <p id="admin-storage" class="storage-info"></p>
       <div class="table-wrap">
@@ -330,6 +338,135 @@
         <button id="call-hangup" class="call-btn bad" type="button" title="Raccrocher">📵</button>
       </div>
       <audio id="call-audio" autoplay></audio>
+    </div>
+  </div>
+
+  <!-- ====================== CHAÎNES ====================== -->
+  <div id="modal-chan-reco" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>✨ Recommandations</h2>
+      <p class="hint">Les chaînes sont classées de la plus suivie à la moins suivie.</p>
+      <div id="reco-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-channel" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <div class="chan-head">
+        <div id="chan-avatar"></div>
+        <div class="chan-meta">
+          <h2 id="chan-name"></h2>
+          <small id="chan-subs"></small>
+        </div>
+      </div>
+      <p id="chan-desc" class="hint"></p>
+      <div class="chan-actions">
+        <button id="chan-follow" class="btn small primary" type="button"></button>
+        <button id="chan-edit" class="btn small hidden" type="button">✏️ Modifier</button>
+        <button id="chan-delete" class="btn small danger hidden" type="button">🗑 Supprimer</button>
+      </div>
+      <div id="chan-posts" class="chan-posts"></div>
+      <form id="chan-compose" class="chan-compose hidden" autocomplete="off">
+        <button id="chan-photo-btn" class="icon-btn" type="button" title="Photo">📷</button>
+        <input id="chan-photo" type="file" accept="image/*" hidden />
+        <button id="chan-video-btn" class="icon-btn" type="button" title="Vidéo">🎬</button>
+        <input id="chan-video" type="file" accept="video/mp4,video/webm,video/quicktime" hidden />
+        <input id="chan-text" type="text" maxlength="2000" placeholder="Écrire dans la chaîne…" />
+        <button class="btn primary" type="submit">Publier</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="modal-chan-edit" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2 id="chan-edit-title">Créer une chaîne</h2>
+      <div class="profile-photo">
+        <div id="chan-edit-preview"></div>
+        <div class="photo-fields">
+          <label class="btn small file-btn">📁 Photo de la chaîne
+            <input id="chan-edit-file" type="file" accept="image/*" hidden />
+          </label>
+        </div>
+      </div>
+      <label>Nom de la chaîne
+        <input id="chan-edit-name" type="text" maxlength="40" />
+      </label>
+      <label>Description
+        <input id="chan-edit-desc" type="text" maxlength="300" />
+      </label>
+      <p id="chan-edit-error" class="error"></p>
+      <button id="chan-edit-save" class="btn primary" type="button">Enregistrer</button>
+    </div>
+  </div>
+
+  <!-- ====================== ADMINISTRATION ====================== -->
+  <div id="modal-hub" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🛠️ Administration</h2>
+      <button class="btn hub-item" data-hub="reports" type="button"><span>⚠️ Signalements</span><span id="hub-reports-badge" class="badge hidden">0</span></button>
+      <button class="btn hub-item" data-hub="users" type="button"><span>👥 Comptes, codes et bans</span></button>
+      <button class="btn hub-item" data-hub="stories" type="button"><span>🟣 Stories</span></button>
+      <button class="btn hub-item" data-hub="channels" type="button"><span>📢 Chaînes</span></button>
+    </div>
+  </div>
+
+  <div id="modal-admin-stories" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🟣 Toutes les stories</h2>
+      <div id="admin-stories-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-admin-channels" class="modal hidden">
+    <div class="modal-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📢 Toutes les chaînes</h2>
+      <div id="admin-channels-list"></div>
+    </div>
+  </div>
+
+  <div id="modal-ban" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>⛔ Bannir <span id="ban-target"></span></h2>
+      <div class="ban-presets">
+        <button class="btn small" data-min="30" type="button">30 min</button>
+        <button class="btn small" data-min="120" type="button">2 heures</button>
+        <button class="btn small" data-min="1440" type="button">1 jour</button>
+        <button class="btn small" data-min="7200" type="button">5 jours</button>
+        <button class="btn small" data-min="43200" type="button">30 jours</button>
+        <button class="btn small" data-min="perm" type="button">Définitif</button>
+      </div>
+      <label>Ou une durée personnalisée
+        <div class="row">
+          <input id="ban-num" type="number" min="1" placeholder="ex : 3" />
+          <select id="ban-unit">
+            <option value="1">minutes</option>
+            <option value="60">heures</option>
+            <option value="1440" selected>jours</option>
+          </select>
+        </div>
+      </label>
+      <p id="ban-error" class="error"></p>
+      <button id="ban-confirm" class="btn primary" type="button">Bannir</button>
+    </div>
+  </div>
+
+  <div id="modal-sanction" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2 id="sanction-title"></h2>
+      <p id="sanction-sub" class="hint"></p>
+      <label class="check"><input id="sanction-warn" type="checkbox" checked /> Envoyer un avertissement au compte</label>
+      <input id="sanction-text" type="text" maxlength="500" />
+      <label class="check" id="sanction-block-row" style="margin-top:14px"><input id="sanction-block" type="checkbox" checked /> Lui interdire de recréer une chaîne</label>
+      <p id="sanction-error" class="error"></p>
+      <button id="sanction-confirm" class="btn primary" type="button">Supprimer</button>
     </div>
   </div>
 

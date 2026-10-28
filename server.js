@@ -52,7 +52,7 @@ const PIN_RE = /^\d{4}$/;
 const RESERVED = ['admin', 'administrateur', 'administrator'];
 const THEMES = ['dark', 'light'];
 const ACCENTS = ['violet', 'ocean', 'menthe', 'rose', 'orange'];
-const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
+const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' };
 
 const ICON_URL =
   'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20conect.jpg?raw=true';
@@ -67,6 +67,7 @@ const emptyDb = () => ({
   reports: [],
   stories: [],
   calls: [],
+  channels: [],
 });
 
 let db = emptyDb();
@@ -83,6 +84,7 @@ function normalizeDb(d) {
     reports: Array.isArray(d.reports) ? d.reports : [],
     stories: Array.isArray(d.stories) ? d.stories : [],
     calls: Array.isArray(d.calls) ? d.calls : [],
+    channels: Array.isArray(d.channels) ? d.channels : [],
   };
 }
 
@@ -226,7 +228,7 @@ function createPgStorage() {
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
@@ -531,12 +533,21 @@ app.get('/sw.js', (q, r) => {
 
 app.get('/uploads/:name', async (req, res) => {
   const name = req.params.name;
-  if (!/^[a-f0-9]{24}\.(jpg|png|webp|gif)$/.test(name)) return res.status(404).end();
+  if (!/^[a-f0-9]{24}\.(jpg|png|webp|gif|mp4|webm|mov)$/.test(name)) return res.status(404).end();
   try {
     const buf = await storage.getFile(name);
     if (!buf) return res.status(404).end();
     res.set('Content-Type', MIME[name.split('.')[1]]);
     res.set('Cache-Control', 'public, max-age=604800, immutable');
+    res.set('Accept-Ranges', 'bytes');
+    const rg = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (rg && (rg[1] || rg[2])) {
+      const total = buf.length;
+      const start = rg[1] ? parseInt(rg[1], 10) : Math.max(0, total - parseInt(rg[2], 10));
+      const end = rg[1] && rg[2] ? Math.min(parseInt(rg[2], 10), total - 1) : total - 1;
+      if (start > end || start >= total) return res.status(416).set('Content-Range', 'bytes */' + total).end();
+      return res.status(206).set('Content-Range', 'bytes ' + start + '-' + end + '/' + total).send(buf.subarray(start, end + 1));
+    }
     res.send(buf);
   } catch (e) {
     res.status(500).end();
@@ -551,6 +562,10 @@ function auth(req, res, next) {
   const s = db.sessions[t];
   if (!s || (s.userId !== 'admin' && !getUser(s.userId))) {
     return res.status(401).json({ error: 'Session expirée, reconnecte-toi.' });
+  }
+  if (s.userId !== 'admin') {
+    const bu = getUser(s.userId);
+    if (banInfo(bu)) return res.status(401).json({ error: banMessage(bu) });
   }
   req.token = t;
   req.userId = s.userId;
@@ -577,6 +592,7 @@ app.post('/api/login', (req, res) => {
     if (user.pin !== pin) {
       return res.status(401).json({ error: 'Ce pseudo existe déjà avec un autre code PIN.' });
     }
+    if (banInfo(user)) return res.status(403).json({ error: banMessage(user) });
   } else {
     user = {
       id: uid(),
@@ -825,6 +841,177 @@ app.post('/api/upload', auth, async (req, res) => {
   }
 });
 
+/* --------- Bans (suspensions avec durée) --------- */
+
+const PERM_BAN = 32503680000000; // an 3000 = définitif
+
+function banInfo(u) {
+  if (!u || !u.bannedUntil) return 0;
+  if (u.bannedUntil <= Date.now()) { u.bannedUntil = 0; saveDb(); return 0; }
+  return u.bannedUntil;
+}
+
+function plural(n, a, b) { return n + ' ' + (n > 1 ? b : a); }
+
+function banMessage(u) {
+  if (u.bannedUntil >= PERM_BAN) return 'Ton compte a été suspendu définitivement.';
+  const mins = Math.max(1, Math.ceil((u.bannedUntil - Date.now()) / 60000));
+  const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  const parts = [];
+  if (d) parts.push(plural(d, 'jour', 'jours'));
+  if (h) parts.push(plural(h, 'heure', 'heures'));
+  if (m) parts.push(plural(m, 'minute', 'minutes'));
+  return 'Ton compte a été suspendu. Tu pourras retourner sur ton compte dans ' + parts.slice(0, 2).join(' et ') + '.';
+}
+
+function warnUser(userId, text) {
+  const t = getUser(userId);
+  const msg = String(text || '').trim().slice(0, 2000);
+  if (!t || !msg) return;
+  t.warnings = (t.warnings || 0) + 1;
+  addMessage('admin', t.id, '⚠️ ' + msg);
+}
+
+/* --------- Chaînes --------- */
+
+const VID_RE = /^\/uploads\/[a-f0-9]{24}\.(mp4|webm|mov)$/;
+const VIDEO_EXT = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+
+function chanFiles(c) {
+  const list = [c.avatar];
+  c.posts.forEach((p) => list.push(p.image, p.video));
+  return list.filter((x) => x && x.startsWith('/uploads/')).map((x) => x.split('/').pop());
+}
+
+function chanPublic(c, viewerId) {
+  return {
+    id: c.id,
+    name: c.name,
+    description: c.description || '',
+    avatar: c.avatar || '',
+    subscribers: c.subscribers.length,
+    subscribed: c.subscribers.includes(viewerId),
+    mine: c.ownerId === viewerId,
+    posts: c.posts.length,
+    lastTs: c.posts.length ? c.posts[c.posts.length - 1].ts : c.createdAt,
+  };
+}
+
+function readChanInput(body) {
+  const name = String((body && body.name) || '').trim().replace(/\s+/g, ' ');
+  const description = String((body && body.description) || '').trim().slice(0, 300);
+  const avatar = String((body && body.avatar) || '');
+  if (name.length < 2 || name.length > 40) return { error: 'Le nom de la chaîne doit faire entre 2 et 40 caractères.' };
+  if (avatar && !IMG_RE.test(avatar)) return { error: 'Photo de chaîne invalide.' };
+  return { name, description, avatar };
+}
+
+async function dropChannel(c) {
+  db.channels = db.channels.filter((x) => x.id !== c.id);
+  saveDb();
+  for (const n of chanFiles(c)) { try { await storage.delFile(n); } catch (e) { /* ignore */ } }
+  io.emit('channels:update');
+}
+
+app.get('/api/channels', auth, (req, res) => {
+  res.json(db.channels.map((c) => chanPublic(c, req.userId)).sort((a, b) => b.subscribers - a.subscribers || b.lastTs - a.lastTs));
+});
+
+app.post('/api/channels', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible pour l\'administrateur.' });
+  const u = getUser(req.userId);
+  if (u.channelBan) return res.status(403).json({ error: 'L\'administrateur t\'a interdit de créer des chaînes.' });
+  if (db.channels.filter((c) => c.ownerId === u.id).length >= 3) return res.status(400).json({ error: 'Tu peux créer 3 chaînes maximum.' });
+  const v = readChanInput(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  if (db.channels.some((c) => c.name.toLowerCase() === v.name.toLowerCase())) return res.status(409).json({ error: 'Ce nom de chaîne est déjà pris.' });
+  const c = { id: uid(), ownerId: u.id, name: v.name, description: v.description, avatar: v.avatar, createdAt: Date.now(), subscribers: [u.id], posts: [] };
+  db.channels.push(c);
+  saveDb();
+  io.emit('channels:update');
+  res.json(chanPublic(c, u.id));
+});
+
+app.put('/api/channels/:id', auth, (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id && x.ownerId === req.userId);
+  if (!c) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  const v = readChanInput(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  if (db.channels.some((x) => x.id !== c.id && x.name.toLowerCase() === v.name.toLowerCase())) return res.status(409).json({ error: 'Ce nom de chaîne est déjà pris.' });
+  if (c.avatar && c.avatar !== v.avatar) storage.delFile(c.avatar.split('/').pop()).catch(() => {});
+  c.name = v.name; c.description = v.description; c.avatar = v.avatar;
+  saveDb();
+  io.emit('channels:update');
+  res.json(chanPublic(c, req.userId));
+});
+
+app.delete('/api/channels/:id', auth, async (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id && x.ownerId === req.userId);
+  if (!c) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  await dropChannel(c);
+  res.json({ ok: true });
+});
+
+app.post('/api/channels/:id/follow', auth, (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id);
+  if (!c || req.isAdmin) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  if (c.ownerId === req.userId) return res.status(400).json({ error: 'Tu es le créateur de cette chaîne.' });
+  const i = c.subscribers.indexOf(req.userId);
+  if (i === -1) c.subscribers.push(req.userId); else c.subscribers.splice(i, 1);
+  saveDb();
+  io.emit('channels:update');
+  res.json({ subscribed: i === -1, subscribers: c.subscribers.length });
+});
+
+app.get('/api/channels/:id/posts', auth, (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  res.json({ channel: chanPublic(c, req.userId), posts: c.posts.slice(-200) });
+});
+
+app.post('/api/channels/:id/posts', auth, (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id && x.ownerId === req.userId);
+  if (!c) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
+  const image = String((req.body && req.body.image) || '');
+  const video = String((req.body && req.body.video) || '');
+  if (image && !IMG_RE.test(image)) return res.status(400).json({ error: 'Image invalide.' });
+  if (video && !VID_RE.test(video)) return res.status(400).json({ error: 'Vidéo invalide.' });
+  if (!text && !image && !video) return res.status(400).json({ error: 'Publication vide.' });
+  const post = { id: uid(), text, ts: Date.now() };
+  if (image) post.image = image;
+  if (video) post.video = video;
+  c.posts.push(post);
+  saveDb();
+  io.emit('channels:update');
+  res.json(post);
+});
+
+app.delete('/api/channels/:id/posts/:pid', auth, async (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id && x.ownerId === req.userId);
+  const i = c ? c.posts.findIndex((p) => p.id === req.params.pid) : -1;
+  if (i === -1) return res.status(404).json({ error: 'Publication introuvable.' });
+  const [p] = c.posts.splice(i, 1);
+  saveDb();
+  for (const f of [p.image, p.video]) { if (f) { try { await storage.delFile(f.split('/').pop()); } catch (e) { /* ignore */ } } }
+  io.emit('channels:update');
+  res.json({ ok: true });
+});
+
+app.post('/api/upload-video', auth, express.raw({ type: Object.keys(VIDEO_EXT), limit: '30mb' }), async (req, res) => {
+  if (req.isAdmin || !db.channels.some((c) => c.ownerId === req.userId)) return res.status(403).json({ error: 'Crée d\'abord une chaîne pour publier des vidéos.' });
+  const ext = VIDEO_EXT[String(req.headers['content-type'] || '').split(';')[0]];
+  if (!ext || !Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Vidéo invalide (MP4, WebM ou MOV, 30 Mo max).' });
+  const name = crypto.randomBytes(12).toString('hex') + '.' + ext;
+  try {
+    await storage.putFile(name, req.body);
+    res.json({ url: '/uploads/' + name });
+  } catch (e) {
+    console.error('Upload vidéo :', e.message);
+    res.status(500).json({ error: 'Impossible d\'enregistrer la vidéo.' });
+  }
+});
+
 /* --------- Stories (visibles 24 h) --------- */
 
 const STORY_TTL = 24 * 3600 * 1000;
@@ -994,6 +1181,8 @@ app.get('/api/admin/users', auth, adminOnly, (req, res) => {
       pseudo: u.pseudo,
       nickname: u.nickname || '',
       reports: db.reports.filter((r) => r.targetId === u.id).length,
+      bannedUntil: banInfo(u) ? u.bannedUntil : 0,
+      channelBan: !!u.channelBan,
       pin: u.pin,
       shareCode: u.shareCode,
       avatar: u.avatar || '',
@@ -1012,6 +1201,9 @@ async function removeUser(id) {
 
   const files = db.messages.filter((m) => (m.from === id || m.to === id) && m.image).map((m) => m.image.split('/').pop());
   db.stories.filter((s) => s.userId === id).forEach((s) => files.push(s.image.split('/').pop()));
+  db.channels.filter((c) => c.ownerId === id).forEach((c) => chanFiles(c).forEach((n) => files.push(n)));
+  db.channels = db.channels.filter((c) => c.ownerId !== id);
+  db.channels.forEach((c) => { c.subscribers = c.subscribers.filter((x) => x !== id); });
 
   db.users.splice(idx, 1);
   db.users.forEach((u) => {
@@ -1098,12 +1290,115 @@ app.post('/api/admin/reports/:id/dismiss', auth, adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/admin/users/:id/ban', auth, adminOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  let until;
+  if (req.body && req.body.permanent) {
+    until = PERM_BAN;
+  } else {
+    const m = Math.floor(Number(req.body && req.body.minutes));
+    if (!(m >= 1 && m <= 5 * 525600)) return res.status(400).json({ error: 'Durée invalide.' });
+    until = Date.now() + m * 60000;
+  }
+  u.bannedUntil = until;
+  const rid = req.body && req.body.reportId;
+  const r = rid && db.reports.find((x) => x.id === rid);
+  if (r) { r.status = 'banned'; r.handledAt = Date.now(); }
+  for (const t of Object.keys(db.sessions)) {
+    if (db.sessions[t].userId === u.id) delete db.sessions[t];
+  }
+  const cid = inCall.get(u.id);
+  if (cid) endCall(cid, 'offline');
+  saveDb();
+  io.to(u.id).emit('banned', { message: banMessage(u) });
+  io.in(u.id).disconnectSockets(true);
+  io.to('admin').emit('reports:update');
+  io.emit('contacts:update');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/unban', auth, adminOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  u.bannedUntil = 0;
+  saveDb();
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/channel-ban', auth, adminOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  u.channelBan = !!(req.body && req.body.value);
+  saveDb();
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/stories', auth, adminOnly, (req, res) => {
+  const lim = Date.now() - STORY_TTL;
+  res.json(
+    db.stories
+      .filter((s) => s.ts >= lim)
+      .sort((a, b) => b.ts - a.ts)
+      .map((s) => {
+        const u = getUser(s.userId);
+        return {
+          id: s.id, userId: s.userId, image: s.image, text: s.text || '', ts: s.ts,
+          authorPseudo: u ? u.pseudo : 'Compte supprimé',
+          authorName: u ? (u.nickname ? u.nickname + ' (' + u.pseudo + ')' : u.pseudo) : 'Compte supprimé',
+          likes: s.likes.length, views: Object.keys(s.views).length,
+        };
+      })
+  );
+});
+
+app.post('/api/admin/stories/:id/delete', auth, adminOnly, async (req, res) => {
+  const i = db.stories.findIndex((x) => x.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'Story introuvable.' });
+  const [st] = db.stories.splice(i, 1);
+  saveDb();
+  try { await storage.delFile(st.image.split('/').pop()); } catch (e) { /* ignore */ }
+  notifyStory(st.userId);
+  warnUser(st.userId, req.body && req.body.warn);
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/channels', auth, adminOnly, (req, res) => {
+  res.json(
+    db.channels
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((c) => {
+        const o = getUser(c.ownerId);
+        return {
+          id: c.id, name: c.name, description: c.description || '', avatar: c.avatar || '', createdAt: c.createdAt,
+          subscribers: c.subscribers.length, posts: c.posts.length,
+          ownerId: c.ownerId, ownerExists: !!o,
+          ownerPseudo: o ? o.pseudo : 'Compte supprimé',
+          ownerName: o ? (o.nickname ? o.nickname + ' (' + o.pseudo + ')' : o.pseudo) : 'Compte supprimé',
+        };
+      })
+  );
+});
+
+app.post('/api/admin/channels/:id/delete', auth, adminOnly, async (req, res) => {
+  const c = db.channels.find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Chaîne introuvable.' });
+  const owner = getUser(c.ownerId);
+  if (owner && req.body && req.body.block) owner.channelBan = true;
+  await dropChannel(c);
+  if (owner) warnUser(owner.id, req.body && req.body.warn);
+  res.json({ ok: true });
+});
+
 /* ------------------------------ Socket.io ------------------------------ */
 
 io.use((socket, next) => {
   const t = socket.handshake.auth && socket.handshake.auth.token;
   const s = db.sessions[t];
   if (!s || (s.userId !== 'admin' && !getUser(s.userId))) return next(new Error('unauthorized'));
+  const bu = s.userId === 'admin' ? null : getUser(s.userId);
+  if (bu && banInfo(bu)) return next(new Error('banned:' + banMessage(bu)));
   socket.userId = s.userId;
   next();
 });
@@ -1133,7 +1428,7 @@ io.on('connection', (socket) => {
   socket.on('call:invite', (data, cb) => {
     const reply = typeof cb === 'function' ? cb : () => {};
     const to = String((data && data.to) || '');
-    if (id === 'admin' || to === 'admin') return reply({ error: 'Appel impossible avec l\'administrateur.' });
+    if (to === 'admin') return reply({ error: 'Tu ne peux pas appeler l\'administrateur.' });
     if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas appeler cette personne.' });
     if (!isOnline(to)) return reply({ error: 'Cette personne est hors ligne.' });
     if (inCall.has(id) || inCall.has(to)) return reply({ error: 'Ligne occupée.' });
