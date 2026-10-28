@@ -23,6 +23,19 @@
      PGSSL=disable désactive SSL pour un PostgreSQL local
    ============================================================ */
 
+// Lit le fichier .env (s'il existe) sans aucun module supplémentaire.
+// Les variables déjà définies par l'hébergeur (Render...) restent prioritaires.
+try {
+  const envFile = require('path').join(__dirname, '.env');
+  if (require('fs').existsSync(envFile)) {
+    for (const line of require('fs').readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+      if (!m || line.trim().startsWith('#')) continue;
+      if (process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
+  }
+} catch (e) { /* ignore */ }
+
 const express = require('express');
 const http = require('http');
 const path = require('path');
