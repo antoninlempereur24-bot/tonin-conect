@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_PIN = String(process.env.ADMIN_PIN || '1234');
+const ADMIN_PIN = String(process.env.ADMIN_PIN || '137920');
 const DB_FILE = path.join(__dirname, 'db.json');
 const PIN_RE = /^\d{4}$/;
 const RESERVED = ['admin', 'administrateur', 'administrator'];
