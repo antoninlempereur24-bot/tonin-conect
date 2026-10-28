@@ -133,7 +133,13 @@
     el.className = 'avatar' + (big ? ' big' : '');
     const fallback = () => {
       el.innerHTML = '';
-      if (user.isAdmin) {
+      if (user.isGroup) {
+        el.style.background = colorFor(user.name || '?');
+        el.textContent = '👥';
+      } else if (user.isSystem) {
+        el.style.background = 'linear-gradient(135deg,#4da3ff,#7c5cff)';
+        el.textContent = '🔔';
+      } else if (user.isAdmin) {
         el.style.background = 'linear-gradient(135deg,#f5a623,#f76b1c)';
         el.textContent = '👑';
       } else {
@@ -171,6 +177,8 @@
   const fmtDay = (ts) =>
     new Date(ts).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   const fmtDate = (ts) => new Date(ts).toLocaleDateString('fr-FR');
+  const EDIT_WINDOW = 15 * 60 * 1000; // modification possible 15 minutes
+  const isGroupId = (x) => typeof x === 'string' && x.startsWith('g_');
 
   function readMap() {
     try { return JSON.parse(localStorage.getItem('tc_read_' + state.me.id)) || {}; } catch (e) { return {}; }
@@ -184,7 +192,7 @@
   }
 
   const previewText = (m) =>
-    m.image ? (m.text ? '📷 ' + m.text : '📷 Photo') : m.text;
+    m.audio ? '🎤 Message vocal' : m.image ? (m.text ? '📷 ' + m.text : '📷 Photo') : m.text;
 
   /* ---------------- Images (redimensionnement) ---------------- */
 
@@ -344,7 +352,7 @@
     });
 
     socket.on('message', async (msg) => {
-      const other = msg.from === state.me.id ? msg.to : msg.from;
+      const other = isGroupId(msg.to) ? msg.to : msg.from === state.me.id ? msg.to : msg.from;
       const known = state.contacts.some((c) => c.id === other);
       if (!known) await loadContacts();
 
@@ -370,12 +378,13 @@
   async function loadContacts() {
     state.contacts = await api('/api/contacts');
     state.contacts.forEach((c) => { if (c.online) state.online.add(c.id); });
+    if (state.current && !state.contacts.some((c) => c.id === state.current)) $('btn-back').click();
 
     if (!state.unreadInit) {
       const map = readMap();
       state.contacts.forEach((c) => {
         const l = c.last;
-        state.unread[c.id] = l && l.from === c.id && l.ts > (map[c.id] || 0) ? 1 : 0;
+        state.unread[c.id] = l && (c.isGroup ? l.from !== state.me.id : l.from === c.id) && l.ts > (map[c.id] || 0) ? 1 : 0;
       });
       state.unreadInit = true;
     }
@@ -391,7 +400,8 @@
     const list = state.contacts
       .filter((c) => (c.name + ' ' + c.pseudo).toLowerCase().includes(q))
       .sort((a, b) => {
-        if (a.isAdmin !== b.isAdmin) return a.isAdmin ? -1 : 1; // Système épinglé
+        const rank = (c) => (c.isSystem ? 0 : c.isAdmin ? 1 : 2); // Système et Administrateur épinglés
+        if (rank(a) !== rank(b)) return rank(a) - rank(b);
         const ta = a.last ? a.last.ts : 0;
         const tb = b.last ? b.last.ts : 0;
         if (ta !== tb) return tb - ta;
@@ -419,7 +429,7 @@
       const name = document.createElement('div');
       name.className = 'name';
       const nm = document.createElement('span');
-      nm.textContent = (c.isAdmin ? '📌 ' : '') + c.name;
+      nm.textContent = (c.isAdmin || c.isSystem ? '📌 ' : '') + (c.staff ? '🛠️ ' : '') + c.name;
       name.appendChild(nm);
       if (c.last) {
         const t = document.createElement('time');
@@ -430,7 +440,7 @@
       const prev = document.createElement('div');
       prev.className = 'preview';
       prev.textContent = c.last
-        ? (c.last.from === state.me.id ? 'Vous : ' : '') + previewText(c.last)
+        ? (c.last.from === state.me.id ? 'Vous : ' : c.isGroup ? ((c.members.find((x) => x.id === c.last.from) || {}).name || '?') + ' : ' : '') + previewText(c.last)
         : 'Aucun message';
 
       meta.appendChild(name);
@@ -459,15 +469,17 @@
     const holder = $('chat-avatar');
     holder.innerHTML = '';
     holder.appendChild(avatarWithDot(c));
-    $('chat-name').textContent = c.name;
-    $('btn-call').classList.toggle('hidden', !!c.isAdmin);
-    $('send-form').classList.toggle('hidden', !!c.isAdmin && !state.me.isAdmin);
-    $('chat-status').textContent = c.isAdmin
-      ? 'Notifications du système'
-      : state.online.has(c.id) ? 'En ligne' : 'Hors ligne';
+    $('chat-name').textContent = (c.staff ? '🛠️ ' : '') + c.name;
+    $('btn-call').classList.toggle('hidden', !!(c.isAdmin || c.isSystem));
+    $('btn-video').classList.toggle('hidden', !!(c.isAdmin || c.isSystem));
+    $('send-form').classList.toggle('hidden', !!c.isSystem);
+    $('chat-status').textContent = c.isSystem
+      ? 'Notifications automatiques'
+      : c.isGroup ? c.members.length + ' membres' : state.online.has(c.id) ? 'En ligne' : 'Hors ligne';
   }
 
   async function openChat(id) {
+    if (state.rec) stopRec(false);
     state.current = id;
     $('chat-empty').classList.add('hidden');
     $('chat-panel').classList.remove('hidden');
@@ -513,6 +525,13 @@
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     row.dataset.id = m.id;
+    const curChat = state.contacts.find((x) => x.id === state.current);
+    if (curChat && curChat.isGroup && m.from !== state.me.id) {
+      const lab = document.createElement('div');
+      lab.className = 'sender';
+      lab.textContent = (curChat.members.find((x) => x.id === m.from) || {}).name || 'Ancien membre';
+      bubble.appendChild(lab);
+    }
 
     if (m.image) {
       bubble.classList.add('has-img');
@@ -528,6 +547,15 @@
       });
       bubble.appendChild(img);
     }
+    if (m.audio) {
+      bubble.classList.add('has-audio');
+      const au = document.createElement('audio');
+      au.className = 'chat-audio';
+      au.controls = true;
+      au.preload = 'metadata';
+      au.src = m.audio;
+      bubble.appendChild(au);
+    }
     if (m.text) {
       const txt = document.createElement('div');
       txt.textContent = m.text;
@@ -539,7 +567,7 @@
     if (m.from === state.me.id) {
       const acts = document.createElement('div');
       acts.className = 'msg-actions';
-      if (m.text) {
+      if (m.text && Date.now() - m.ts < EDIT_WINDOW) {
         const ed = document.createElement('button');
         ed.type = 'button';
         ed.title = 'Modifier';
@@ -560,6 +588,7 @@
   }
 
   async function editMessage(m) {
+    if (Date.now() - m.ts >= EDIT_WINDOW) return toast('Tu ne peux plus modifier ce message (15 minutes maximum).');
     const text = prompt('Modifier le message :', m.text);
     if (text === null) return;
     try { await api('/api/messages/' + m.id, 'PUT', { text }); } catch (err) { toast(err.message); }
@@ -584,6 +613,7 @@
   }
 
   $('btn-back').addEventListener('click', () => {
+    if (state.rec) stopRec(false);
     $('app-screen').classList.remove('chat-open');
     state.current = null;
     $('chat-panel').classList.add('hidden');
@@ -623,6 +653,74 @@
     }
   });
 
+  /* ---------------- Messages vocaux ---------------- */
+
+  function recUi(on) {
+    ['msg-input', 'btn-photo'].forEach((id) => $(id).classList.toggle('hidden', on));
+    $('send-form').querySelector('button[type="submit"]').classList.toggle('hidden', on);
+    $('rec-timer').classList.toggle('hidden', !on);
+    $('btn-mic-cancel').classList.toggle('hidden', !on);
+    $('btn-mic').textContent = on ? '⬆️' : '🎤';
+    $('btn-mic').title = on ? 'Envoyer le vocal' : 'Message vocal';
+  }
+
+  async function startRec() {
+    if (!state.current) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      return toast('Les vocaux ne sont pas disponibles ici (connexion HTTPS requise).');
+    }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { return toast('Autorise le micro pour envoyer un vocal.'); }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    let mr;
+    try { mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+    catch (e) { stream.getTracks().forEach((t) => t.stop()); return toast('Enregistrement impossible sur cet appareil.'); }
+    const rec = { mr, stream, chunks: [], to: state.current, started: Date.now(), send: false, timer: null };
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+    mr.onstop = () => finishRec(rec);
+    state.rec = rec;
+    mr.start();
+    recUi(true);
+    const tick = () => {
+      const s = Math.round((Date.now() - rec.started) / 1000);
+      $('rec-timer').textContent = '🔴 ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    };
+    tick();
+    rec.timer = setInterval(tick, 500);
+  }
+
+  function stopRec(send) {
+    const r = state.rec;
+    if (!r) return;
+    r.send = send;
+    clearInterval(r.timer);
+    state.rec = null;
+    recUi(false);
+    try { r.mr.stop(); } catch (e) { r.stream.getTracks().forEach((t) => t.stop()); }
+  }
+
+  async function finishRec(rec) {
+    rec.stream.getTracks().forEach((t) => t.stop());
+    if (!rec.send || !rec.chunks.length) return;
+    const type = (rec.mr.mimeType || 'audio/webm').split(';')[0];
+    try {
+      toast('Envoi du vocal…');
+      const res = await fetch('/api/upload-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': type, Authorization: 'Bearer ' + state.token },
+        body: new Blob(rec.chunks, { type }),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (x) { /* pas de JSON */ }
+      if (!res.ok) throw new Error(data.error || 'Envoi du vocal impossible.');
+      state.socket.emit('message:send', { to: rec.to, text: '', audio: data.url }, (r) => { if (r && r.error) toast(r.error); });
+    } catch (err) { toast(err.message); }
+  }
+
+  $('btn-mic').addEventListener('click', () => (state.rec ? stopRec(true) : startRec()));
+  $('btn-mic-cancel').addEventListener('click', () => stopRec(false));
+
   /* ---------------- Modales ---------------- */
 
   const openModal = (id) => $(id).classList.remove('hidden');
@@ -639,12 +737,15 @@
 
   /* ---------------- Ajout de contact ---------------- */
 
-  $('btn-add').addEventListener('click', () => {
+  $('btn-add').addEventListener('click', () => openModal('modal-addmenu'));
+  $('menu-add-contact').addEventListener('click', () => {
+    closeModal('modal-addmenu');
     $('add-code').value = '';
     $('add-error').textContent = '';
     openModal('modal-add');
     $('add-code').focus();
   });
+  $('menu-add-group').addEventListener('click', () => { closeModal('modal-addmenu'); openGroupNew(); });
 
   $('add-code').addEventListener('input', (e) => {
     e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
@@ -706,6 +807,8 @@
     $('field-pseudo').classList.toggle('hidden', isAdmin);
     $('field-nickname').classList.toggle('hidden', isAdmin);
     $('share-section').classList.toggle('hidden', isAdmin);
+    $('field-desc').classList.toggle('hidden', !isAdmin);
+    if (isAdmin) $('settings-desc').value = me.description || '';
 
     const code = $('settings-code');
     code.type = 'password';
@@ -807,6 +910,7 @@
     }
 
     if (isAdmin) {
+      body.description = $('settings-desc').value;
       if (code !== '') {
         if (code.length < 4) {
           $('settings-error').textContent = 'Le code administrateur doit faire au moins 4 caractères.';
@@ -1022,7 +1126,7 @@
       if (!$('modal-requests').classList.contains('hidden')) loadRequests(); else refreshReportsBadge();
     });
     socket.on('message:edited', (msg) => {
-      const other = msg.from === state.me.id ? msg.to : msg.from;
+      const other = isGroupId(msg.to) ? msg.to : msg.from === state.me.id ? msg.to : msg.from;
       const list = state.cache[other];
       const i = list ? list.findIndex((x) => x.id === msg.id) : -1;
       if (i !== -1) list[i] = msg;
@@ -1032,7 +1136,7 @@
       renderContacts();
     });
     socket.on('message:deleted', async ({ id, from, to }) => {
-      const other = from === state.me.id ? to : from;
+      const other = isGroupId(to) ? to : from === state.me.id ? to : from;
       const list = state.cache[other];
       if (list) { const i = list.findIndex((x) => x.id === id); if (i !== -1) list.splice(i, 1); }
       rerenderCurrent(other);
@@ -1060,38 +1164,58 @@
       if (!$('modal-reports').classList.contains('hidden')) loadReports(); else refreshReportsBadge();
     });
 
-    socket.on('call:incoming', ({ callId, from, name }) => {
+    socket.on('call:incoming', ({ callId, from, name, video, groupName }) => {
       if (state.call) { socket.emit('call:end', { callId }); return; }
-      const c = state.contacts.find((x) => x.id === from) || { id: from, pseudo: name, name };
-      state.call = { id: callId, peerId: from, dir: 'in', stream: null, pc: null, pending: [] };
-      showCall(c, 'Appel entrant…', true);
+      const c = state.contacts.find((x) => x.id === from);
+      state.call = { id: callId, group: !!groupName, video: !!video, dir: 'in', local: null, peers: {}, joined: false, known: {}, ice: null };
+      openCallUi(groupName || name, (groupName ? name + ' appelle le groupe' : 'Appel') + (video ? ' vidéo' : '') + ' entrant…');
+      callTile('caller', name, { name, pseudo: name, avatar: c ? c.avatar : '' }, false);
+      setCallButtons('ringing');
     });
-    socket.on('call:accepted', async ({ callId }) => {
+    socket.on('call:joined', ({ callId, peers }) => {
       const call = state.call;
       if (!call || call.id !== callId) return;
-      try {
-        setCallStatus('Connexion…');
-        const pc = await makePc(call);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('call:signal', { callId, data: { sdp: pc.localDescription } });
-      } catch (e) { toast('Appel impossible.'); hangup(); }
+      call.joined = true;
+      peers.forEach((p) => { call.known[p.id] = p; offerTo(call, p).catch(() => toast('Connexion impossible avec ' + p.name + '.')); });
     });
-    socket.on('call:signal', async ({ callId, data }) => {
+    socket.on('call:peer-joined', ({ callId, peer }) => {
       const call = state.call;
-      if (!call || call.id !== callId || !data) return;
-      const pc = call.pc;
+      if (!call || call.id !== callId) return;
+      call.known[peer.id] = peer;
+      makePeer(call, peer);
+      setCallStatus('Connexion…');
+    });
+    socket.on('call:peer-left', ({ callId, id }) => {
+      const call = state.call;
+      if (!call || call.id !== callId) return;
+      const p = call.peers[id];
+      if (p) toast((call.known[id] ? call.known[id].name : 'Un participant') + ' a quitté l\'appel.');
+      removePeer(call, id);
+    });
+    socket.on('call:media', ({ callId, from, cam, mic }) => {
+      const call = state.call;
+      const p = call && call.id === callId && call.peers[from];
+      if (!p) return;
+      p.cam = cam;
+      p.mic = mic;
+      refreshTile(p);
+    });
+    socket.on('call:signal', async ({ callId, from, data }) => {
+      const call = state.call;
+      if (!call || call.id !== callId || !call.joined || !data) return;
+      const peer = call.peers[from] || makePeer(call, call.known[from] || { id: from, name: 'Participant', avatar: '' });
+      const pc = peer.pc;
       try {
         if (data.candidate) {
-          if (pc && pc.remoteDescription) await pc.addIceCandidate(data.candidate).catch(() => {});
-          else call.pending.push(data.candidate);
-        } else if (data.sdp && pc) {
+          if (pc.remoteDescription) await pc.addIceCandidate(data.candidate).catch(() => {});
+          else peer.pending.push(data.candidate);
+        } else if (data.sdp) {
           await pc.setRemoteDescription(data.sdp);
-          for (const cand of call.pending.splice(0)) await pc.addIceCandidate(cand).catch(() => {});
+          for (const cand of peer.pending.splice(0)) await pc.addIceCandidate(cand).catch(() => {});
           if (data.sdp.type === 'offer') {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            socket.emit('call:signal', { callId, data: { sdp: pc.localDescription } });
+            socket.emit('call:signal', { callId, to: from, data: { sdp: pc.localDescription } });
           }
         }
       } catch (e) { /* ignore */ }
@@ -1099,7 +1223,7 @@
     socket.on('call:ended', ({ callId, reason }) => {
       const call = state.call;
       if (!call || call.id !== callId) return;
-      const msgs = { declined: 'Appel refusé.', offline: 'Ton correspondant s\'est déconnecté.', missed: 'Appel manqué.', hangup: 'Appel terminé.' };
+      const msgs = { declined: 'Appel refusé.', offline: 'Un participant s\'est déconnecté.', missed: 'Appel manqué.', hangup: 'Appel terminé.' };
       cleanupCall();
       toast(msgs[reason] || 'Appel terminé.');
     });
@@ -1110,16 +1234,21 @@
   function openProfile() {
     const c = state.contacts.find((x) => x.id === state.current);
     if (!c) return;
+    if (c.isGroup) return openGroupProfile(c);
     const av = $('profile-avatar');
     av.innerHTML = '';
     av.appendChild(makeAvatar(c, true));
-    $('profile-name').textContent = c.name;
+    $('profile-name').textContent = (c.staff ? '🛠️ ' : '') + c.name;
     $('profile-pseudo').textContent = c.pseudo;
     $('profile-nick').textContent = c.nickname || '—';
     $('profile-code').textContent = !c.isAdmin && c.shareCode ? c.shareCode : '—';
     $('profile-since').textContent = c.since ? fmtDate(c.since) : '—';
     $('profile-alias').value = c.alias || '';
-    $('profile-actions').classList.toggle('hidden', !!c.isAdmin || !!state.me.isAdmin);
+    $('profile-actions').classList.toggle('hidden', !!c.isAdmin || !!c.isSystem || !!state.me.isAdmin);
+    const special = !!(c.isAdmin || c.isSystem);
+    $('profile-dl').classList.toggle('hidden', special);
+    $('profile-desc').textContent = c.description || '';
+    $('profile-desc').classList.toggle('hidden', !special || !c.description);
     openModal('modal-profile');
   }
   $('chat-id').addEventListener('click', openProfile);
@@ -1163,6 +1292,82 @@
       toast('Signalement envoyé à l\'administrateur.');
     } catch (err) { $('report-error').textContent = err.message; }
   });
+
+  /* ---------------- Groupes ---------------- */
+
+  function openGroupNew() {
+    $('group-new-name').value = '';
+    $('group-new-error').textContent = '';
+    const box = $('group-new-members');
+    box.innerHTML = '';
+    const people = state.contacts.filter((c) => !c.isAdmin && !c.isSystem && !c.isGroup);
+    if (!people.length) box.appendChild(emptyDiv('Ajoute d\'abord des contacts pour créer un groupe.'));
+    people.forEach((c) => {
+      const row = document.createElement('label');
+      row.className = 'check';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = c.id;
+      row.appendChild(cb);
+      row.appendChild(makeAvatar(c));
+      const nm = document.createElement('span');
+      nm.textContent = c.name;
+      row.appendChild(nm);
+      box.appendChild(row);
+    });
+    openModal('modal-group-new');
+  }
+
+  $('group-new-create').addEventListener('click', async () => {
+    const members = [...$('group-new-members').querySelectorAll('input:checked')].map((x) => x.value);
+    $('group-new-error').textContent = '';
+    if (!members.length) { $('group-new-error').textContent = 'Choisis au moins un membre.'; return; }
+    if (members.length > 7) { $('group-new-error').textContent = '7 membres maximum (8 avec toi).'; return; }
+    try {
+      const g = await api('/api/groups', 'POST', { name: $('group-new-name').value, members });
+      closeModal('modal-group-new');
+      await loadContacts();
+      toast('Groupe créé !');
+      openChat(g.id);
+    } catch (err) { $('group-new-error').textContent = err.message; }
+  });
+
+  function openGroupProfile(c) {
+    state.groupView = c.id;
+    const av = $('group-avatar');
+    av.innerHTML = '';
+    av.appendChild(makeAvatar(c, true));
+    $('group-name').textContent = c.name;
+    $('group-count').textContent = c.members.length + ' membres';
+    const box = $('group-members');
+    box.innerHTML = '';
+    c.members.forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'contact';
+      row.appendChild(makeAvatar({ name: m.name, pseudo: m.name, avatar: m.avatar }));
+      const nm = document.createElement('div');
+      nm.className = 'meta';
+      nm.textContent = (m.id === state.me.id ? 'Toi' : m.name) + (m.id === c.ownerId ? ' · créateur' : '');
+      row.appendChild(nm);
+      box.appendChild(row);
+    });
+    $('group-delete').classList.toggle('hidden', c.ownerId !== state.me.id);
+    openModal('modal-group');
+  }
+
+  async function leaveOrDeleteGroup(del) {
+    const id = state.groupView;
+    if (!id || !confirm(del ? 'Supprimer définitivement ce groupe et ses messages ?' : 'Quitter ce groupe ?')) return;
+    try {
+      await (del ? api('/api/groups/' + id, 'DELETE') : api('/api/groups/' + id + '/leave', 'POST'));
+      closeModal('modal-group');
+      delete state.cache[id];
+      await loadContacts();
+      toast(del ? 'Groupe supprimé.' : 'Tu as quitté le groupe.');
+    } catch (err) { toast(err.message); }
+  }
+  $('group-leave').addEventListener('click', () => leaveOrDeleteGroup(false));
+  $('group-delete').addEventListener('click', () => leaveOrDeleteGroup(true));
 
   /* ---------------- Stories ---------------- */
 
@@ -1375,7 +1580,7 @@
     } catch (err) { toast(err.message); }
   });
 
-  /* ---------------- Appels vocaux ---------------- */
+  /* ---------------- Appels (voix + vidéo, à deux ou en groupe) ---------------- */
 
   const fmtDur = (s) => Math.floor(s / 60) + ' min ' + String(s % 60).padStart(2, '0') + ' s';
 
@@ -1388,7 +1593,7 @@
     list.forEach((r) => {
       const item = document.createElement('div');
       item.className = 'contact';
-      item.appendChild(makeAvatar({ pseudo: r.name, name: r.name, avatar: r.avatar }));
+      item.appendChild(makeAvatar({ pseudo: r.name, name: r.name, avatar: r.avatar, isGroup: r.group }));
       const meta = document.createElement('div');
       meta.className = 'meta';
       const n = document.createElement('div');
@@ -1401,16 +1606,16 @@
       let label;
       if (r.outgoing) label = r.status === 'ended' ? '↗ Sortant' : r.status === 'declined' ? '↗ Refusé' : '↗ Sans réponse';
       else label = r.status === 'ended' ? '↙ Reçu' : r.status === 'declined' ? '↙ Refusé' : '↙ Manqué';
-      p.textContent = label + ' · ' + fmtDay(r.ts) + ' ' + fmtTime(r.ts) + (r.duration ? ' · ' + fmtDur(r.duration) : '');
+      p.textContent = (r.video ? '🎥 ' : '') + label + ' · ' + fmtDay(r.ts) + ' ' + fmtTime(r.ts) + (r.duration ? ' · ' + fmtDur(r.duration) : '');
       meta.appendChild(n);
       meta.appendChild(p);
       item.appendChild(meta);
       if (r.callable) {
         const b = document.createElement('button');
         b.className = 'icon-btn';
-        b.textContent = '📞';
+        b.textContent = r.video ? '🎥' : '📞';
         b.title = 'Rappeler';
-        b.addEventListener('click', () => startCall(r.other));
+        b.addEventListener('click', () => startCall(r.other, r.video));
         item.appendChild(b);
       }
       box.appendChild(item);
@@ -1419,25 +1624,121 @@
 
   function setCallStatus(t) { $('call-status').textContent = t; }
 
-  function showCall(c, status, incoming) {
-    const av = $('call-avatar');
-    av.innerHTML = '';
-    av.appendChild(makeAvatar(c, true));
-    $('call-name').textContent = c.name || c.pseudo;
+  async function iceServers() {
+    try { return await api('/api/ice'); } catch (e) { return [{ urls: 'stun:stun.l.google.com:19302' }]; }
+  }
+
+  function callTile(id, name, who, local) {
+    const t = document.createElement('div');
+    t.className = 'tile novid' + (local ? ' local' : '');
+    t.dataset.id = id;
+    const v = document.createElement('video');
+    v.autoplay = true;
+    v.playsInline = true;
+    if (local) v.muted = true;
+    const av = document.createElement('div');
+    av.className = 'tile-av';
+    av.appendChild(makeAvatar(who, true));
+    const lab = document.createElement('div');
+    lab.className = 'tile-name';
+    lab.textContent = local ? 'Toi' : name;
+    t.appendChild(v);
+    t.appendChild(av);
+    t.appendChild(lab);
+    $('call-grid').appendChild(t);
+    return t;
+  }
+
+  function setCallButtons(mode) {
+    const call = state.call;
+    const ringing = mode === 'ringing';
+    $('call-accept').classList.toggle('hidden', !ringing);
+    $('call-accept-video').classList.toggle('hidden', !(ringing && call && call.video));
+    const hasVideo = !!(call && call.local && call.local.getVideoTracks().length);
+    $('call-mic').classList.toggle('hidden', ringing);
+    $('call-cam').classList.toggle('hidden', ringing || !hasVideo);
+    $('call-mic').textContent = call && call.mic === false ? '🔇' : '🎙️';
+    $('call-cam').textContent = call && call.cam === false ? '🚫' : '📷';
+  }
+
+  function openCallUi(title, status) {
+    $('call-grid').innerHTML = '';
+    $('call-name').textContent = title;
     setCallStatus(status);
-    $('call-accept').classList.toggle('hidden', !incoming);
     $('call-overlay').classList.remove('hidden');
+  }
+
+  function setLocal(call, stream) {
+    call.local = stream;
+    call.mic = true;
+    call.cam = true;
+    call.localTile = callTile('me', 'Toi', state.me, true);
+    call.localTile.querySelector('video').srcObject = stream;
+    call.localTile.classList.toggle('novid', !stream.getVideoTracks().length);
+  }
+
+  function refreshTile(peer) {
+    const has = !!peer.stream && peer.stream.getVideoTracks().length > 0 && peer.cam !== false;
+    peer.tile.classList.toggle('novid', !has);
+    peer.tile.classList.toggle('mic-off', peer.mic === false);
+  }
+
+  function makePeer(call, info) {
+    if (call.peers[info.id]) return call.peers[info.id];
+    const pc = new RTCPeerConnection({ iceServers: call.ice });
+    const who = { name: info.name, pseudo: info.name, avatar: info.avatar || '' };
+    const peer = { id: info.id, pc, pending: [], stream: null, cam: info.cam, mic: info.mic, tile: callTile(info.id, info.name, who, false) };
+    call.peers[info.id] = peer;
+    if (call.local) call.local.getTracks().forEach((t) => pc.addTrack(t, call.local));
+    if (call.video && !(call.local && call.local.getVideoTracks().length)) pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.onicecandidate = (e) => {
+      if (e.candidate) state.socket.emit('call:signal', { callId: call.id, to: info.id, data: { candidate: e.candidate } });
+    };
+    pc.ontrack = (e) => {
+      if (e.streams && e.streams[0]) peer.stream = e.streams[0];
+      else { peer.stream = peer.stream || new MediaStream(); peer.stream.addTrack(e.track); }
+      const v = peer.tile.querySelector('video');
+      if (v.srcObject !== peer.stream) v.srcObject = peer.stream;
+      v.play().catch(() => {});
+      peer.stream.onaddtrack = () => refreshTile(peer);
+      refreshTile(peer);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') callConnected();
+      if (pc.connectionState === 'failed') {
+        toast('Connexion perdue avec ' + info.name + '.');
+        removePeer(call, info.id);
+        if (!Object.keys(call.peers).length) hangup();
+      }
+    };
+    refreshTile(peer);
+    return peer;
+  }
+
+  function removePeer(call, id) {
+    const p = call.peers[id];
+    if (!p) return;
+    try { p.pc.close(); } catch (e) { /* ignore */ }
+    p.tile.remove();
+    delete call.peers[id];
+  }
+
+  async function offerTo(call, info) {
+    const peer = makePeer(call, info);
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    state.socket.emit('call:signal', { callId: call.id, to: info.id, data: { sdp: peer.pc.localDescription } });
   }
 
   function cleanupCall() {
     const c = state.call;
     if (c) {
       clearInterval(c.timer);
-      if (c.pc) { try { c.pc.close(); } catch (e) { /* ignore */ } }
-      if (c.stream) c.stream.getTracks().forEach((t) => t.stop());
+      Object.keys(c.peers).forEach((id) => { try { c.peers[id].pc.close(); } catch (e) { /* ignore */ } });
+      if (c.local) c.local.getTracks().forEach((t) => t.stop());
     }
     state.call = null;
-    $('call-audio').srcObject = null;
+    $('call-grid').innerHTML = '';
     $('call-overlay').classList.add('hidden');
     if (state.tab === 'calls') loadCalls();
   }
@@ -1453,71 +1754,87 @@
     const c = state.call;
     if (!c || c.startedAt) return;
     c.startedAt = Date.now();
-    const tick = () => setCallStatus('En communication · ' + fmtDur(Math.round((Date.now() - c.startedAt) / 1000)));
+    const tick = () => {
+      const n = Object.keys(c.peers).length + 1;
+      setCallStatus('En communication · ' + fmtDur(Math.round((Date.now() - c.startedAt) / 1000)) + (n > 2 ? ' · ' + n + ' participants' : ''));
+    };
     tick();
     c.timer = setInterval(tick, 1000);
   }
 
-  async function makePc(call) {
-    let servers = [{ urls: 'stun:stun.l.google.com:19302' }];
-    try { servers = await api('/api/ice'); } catch (e) { /* STUN par défaut */ }
-    const pc = new RTCPeerConnection({ iceServers: servers });
-    call.pc = pc;
-    call.stream.getTracks().forEach((t) => pc.addTrack(t, call.stream));
-    pc.onicecandidate = (e) => {
-      if (e.candidate) state.socket.emit('call:signal', { callId: call.id, data: { candidate: e.candidate } });
-    };
-    pc.ontrack = (e) => {
-      const a = $('call-audio');
-      a.srcObject = e.streams[0];
-      a.play().catch(() => {});
-    };
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') callConnected();
-      if (pc.connectionState === 'failed') { toast('Connexion perdue.'); hangup(); }
-    };
-    return pc;
-  }
-
-  async function getMic() {
+  async function getMedia(video) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      toast('Micro indisponible (il faut une connexion HTTPS).');
+      toast('Micro / caméra indisponibles (il faut une connexion HTTPS).');
       return null;
+    }
+    if (video) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: 'user' } }); }
+      catch (e) { toast('Caméra refusée ou absente : appel sans vidéo.'); }
     }
     try { return await navigator.mediaDevices.getUserMedia({ audio: true }); }
     catch (e) { toast('Autorise le micro pour pouvoir appeler.'); return null; }
   }
 
-  async function startCall(id) {
+  async function startCall(id, video) {
     if (state.call) return toast('Un appel est déjà en cours.');
     const c = state.contacts.find((x) => x.id === id);
-    if (!c || c.isAdmin) return;
-    const stream = await getMic();
+    if (!c || c.isAdmin || c.isSystem) return;
+    const stream = await getMedia(!!video);
     if (!stream) return;
-    state.socket.emit('call:invite', { to: id }, (res) => {
-      if (!res || res.error) {
+    const ice = await iceServers();
+    state.socket.emit('call:invite', { to: id, video: !!video }, (res) => {
+      if (!res || res.error || state.call) {
         stream.getTracks().forEach((t) => t.stop());
         return toast((res && res.error) || 'Appel impossible.');
       }
-      state.call = { id: res.callId, peerId: id, dir: 'out', stream, pc: null, pending: [] };
-      showCall(c, 'Appel en cours…', false);
+      const call = { id: res.callId, group: !!c.isGroup, video: !!video, dir: 'out', local: null, peers: {}, joined: true, known: {}, ice };
+      state.call = call;
+      openCallUi(c.name, c.isGroup ? 'Appel du groupe en cours…' : 'Appel en cours…');
+      setLocal(call, stream);
+      setCallButtons('active');
     });
   }
 
-  $('btn-call').addEventListener('click', () => startCall(state.current));
-  $('call-hangup').addEventListener('click', hangup);
-  $('call-accept').addEventListener('click', async () => {
+  async function acceptCall(withVideo) {
     const call = state.call;
-    if (!call) return;
-    const stream = await getMic();
+    if (!call || call.joined) return;
+    const stream = await getMedia(!!withVideo && call.video);
     if (!stream) return hangup();
-    call.stream = stream;
-    $('call-accept').classList.add('hidden');
+    call.ice = await iceServers();
+    $('call-grid').innerHTML = '';
+    setLocal(call, stream);
     setCallStatus('Connexion…');
-    try {
-      await makePc(call);
-      state.socket.emit('call:accept', { callId: call.id });
-    } catch (e) { toast('Appel impossible.'); hangup(); }
+    setCallButtons('active');
+    state.socket.emit('call:accept', { callId: call.id });
+  }
+
+  function sendMedia() {
+    const c = state.call;
+    if (c) state.socket.emit('call:media', { callId: c.id, cam: c.cam !== false, mic: c.mic !== false });
+  }
+
+  $('btn-call').addEventListener('click', () => startCall(state.current, false));
+  $('btn-video').addEventListener('click', () => startCall(state.current, true));
+  $('call-hangup').addEventListener('click', hangup);
+  $('call-accept').addEventListener('click', () => acceptCall(false));
+  $('call-accept-video').addEventListener('click', () => acceptCall(true));
+  $('call-mic').addEventListener('click', () => {
+    const c = state.call;
+    if (!c || !c.local) return;
+    c.mic = c.mic === false;
+    c.local.getAudioTracks().forEach((t) => { t.enabled = c.mic; });
+    c.localTile.classList.toggle('mic-off', !c.mic);
+    setCallButtons('active');
+    sendMedia();
+  });
+  $('call-cam').addEventListener('click', () => {
+    const c = state.call;
+    if (!c || !c.local) return;
+    c.cam = c.cam === false;
+    c.local.getVideoTracks().forEach((t) => { t.enabled = c.cam; });
+    c.localTile.classList.toggle('novid', !c.cam);
+    setCallButtons('active');
+    sendMedia();
   });
 
   /* ---------------- Signalements (administrateur) ---------------- */
@@ -1577,7 +1894,7 @@
       };
 
       const warn = mk('⚠️ Avertir', 'primary', () => {
-        const def = 'Attention ' + r.targetPseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.';
+        const def = 'Attention ' + r.targetPseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte. Si vous ne comprenez pas pourquoi, discutez avec l\'Administrateur.';
         const text = prompt('Avertissement envoyé à ' + r.targetPseudo + ' (tu peux le modifier) :', def);
         if (text === null) return;
         act(() => api('/api/admin/reports/' + r.id + '/warn', 'POST', { text }), 'Avertissement envoyé.');
@@ -2072,7 +2389,7 @@
         title: 'Supprimer la story',
         sub: 'Auteur : ' + s.authorName,
         block: false,
-        defaultText: 'Attention ' + s.authorPseudo + ', une de vos stories a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.',
+        defaultText: 'Attention ' + s.authorPseudo + ', une de vos stories a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte. Si vous ne comprenez pas pourquoi, discutez avec l\'Administrateur.',
         onConfirm: async ({ warn }) => {
           await api('/api/admin/stories/' + s.id + '/delete', 'POST', { warn });
           toast('Story supprimée.');
@@ -2109,7 +2426,7 @@
         title: 'Supprimer la chaîne « ' + c.name + ' »',
         sub: 'Créée par ' + c.ownerName,
         block: c.ownerExists,
-        defaultText: 'Attention ' + c.ownerPseudo + ', votre chaîne « ' + c.name + ' » a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.',
+        defaultText: 'Attention ' + c.ownerPseudo + ', votre chaîne « ' + c.name + ' » a été supprimée car elle ne respectait pas les règles. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte. Si vous ne comprenez pas pourquoi, discutez avec l\'Administrateur.',
         onConfirm: async ({ warn, block }) => {
           await api('/api/admin/channels/' + c.id + '/delete', 'POST', { warn, block });
           toast('Chaîne supprimée.');

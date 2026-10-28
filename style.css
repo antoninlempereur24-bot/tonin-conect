@@ -595,3 +595,35 @@ select { margin-top: 6px; }
   display: flex; align-items: center; justify-content: center; line-height: 1;
   box-shadow: 0 0 0 2px var(--panel);
 }
+
+/* Vocaux */
+.bubble.has-audio { padding: 6px 8px; }
+.chat-audio { display: block; width: 240px; max-width: 100%; height: 40px; }
+#btn-mic { font-size: 22px; flex-shrink: 0; }
+.rec-timer { flex: 1; color: var(--danger); font-weight: 700; padding: 0 6px; }
+.profile-desc { text-align: center; color: var(--muted); line-height: 1.5; margin: 0 0 16px; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+
+/* Appels vidéo (grille de participants) */
+.call-box.call-stage { width: min(96vw, 920px); max-height: 96dvh; overflow-y: auto; padding: 20px; }
+.call-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); margin: 12px 0 18px; }
+.tile { position: relative; aspect-ratio: 4 / 3; background: #000; border-radius: 14px; overflow: hidden; }
+.tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile.local video { transform: scaleX(-1); }
+.tile.novid video { opacity: 0; position: absolute; inset: 0; }
+.tile-av { display: none; position: absolute; inset: 0; z-index: 1; align-items: center; justify-content: center; background: var(--panel-2); }
+.tile.novid .tile-av { display: flex; }
+.tile-av .avatar { margin: 0; }
+.tile-name { position: absolute; left: 8px; bottom: 6px; z-index: 2; background: rgba(0, 0, 0, .55); color: #fff; padding: 2px 9px; border-radius: 8px; font-size: 12px; }
+.tile.mic-off .tile-name::after { content: ' 🔇'; }
+.call-actions { flex-wrap: wrap; gap: 16px; }
+.call-btn.neutral { background: var(--panel-2); border: 1px solid var(--border); }
+.call-btn.off { opacity: .55; }
+#call-status { margin: 4px 0 6px; }
+
+/* Groupes */
+.group-pick { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; padding: 4px; margin-bottom: 8px; }
+.group-pick .check { padding: 8px; border-radius: 10px; cursor: pointer; margin: 0; }
+.group-pick .check:hover, .group-pick .contact:hover { background: var(--panel-2); }
+.group-pick .contact { cursor: default; }
+.sender { font-size: 12px; font-weight: 700; color: var(--accent-2); margin-bottom: 2px; }
+.mine .sender { display: none; }

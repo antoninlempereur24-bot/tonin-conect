@@ -52,7 +52,7 @@ const PIN_RE = /^\d{4}$/;
 const RESERVED = ['admin', 'administrateur', 'administrator'];
 const THEMES = ['dark', 'light'];
 const ACCENTS = ['violet', 'ocean', 'menthe', 'rose', 'pink', 'orange'];
-const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' };
+const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', weba: 'audio/webm', m4a: 'audio/mp4', ogg: 'audio/ogg' };
 
 const ICON_URL =
   'https://github.com/antoninlempereur24-bot/tonin-conect/blob/main/pdp%20tonin%20coco%20.jpg?raw=true';
@@ -69,6 +69,7 @@ const emptyDb = () => ({
   calls: [],
   channels: [],
   banRequests: [],
+  groups: [],
 });
 
 let db = emptyDb();
@@ -87,6 +88,7 @@ function normalizeDb(d) {
     calls: Array.isArray(d.calls) ? d.calls : [],
     channels: Array.isArray(d.channels) ? d.channels : [],
     banRequests: Array.isArray(d.banRequests) ? d.banRequests : [],
+    groups: Array.isArray(d.groups) ? d.groups : [],
   };
 }
 
@@ -196,8 +198,8 @@ function createPgStorage() {
 
   const insertMessage = (m) =>
     pool.query(
-      'INSERT INTO messages(id, from_id, to_id, text, image, ts, edited) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING',
-      [m.id, m.from, m.to, m.text || '', m.image || null, m.ts, !!m.edited]
+      'INSERT INTO messages(id, from_id, to_id, text, image, ts, edited, audio) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING',
+      [m.id, m.from, m.to, m.text || '', m.image || null, m.ts, !!m.edited, m.audio || null]
     );
 
   return {
@@ -209,12 +211,13 @@ function createPgStorage() {
         'CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL, text TEXT, image TEXT, ts BIGINT NOT NULL)'
       );
       await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited BOOLEAN DEFAULT FALSE');
+      await pool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS audio TEXT');
       await pool.query('CREATE INDEX IF NOT EXISTS messages_ts ON messages (ts)');
       await pool.query('CREATE TABLE IF NOT EXISTS files (name TEXT PRIMARY KEY, data BYTEA NOT NULL)');
     },
     async load() {
       const core = await pool.query("SELECT value FROM kv WHERE key = 'core'");
-      const msgs = await pool.query('SELECT id, from_id, to_id, text, image, ts, edited FROM messages ORDER BY ts ASC');
+      const msgs = await pool.query('SELECT id, from_id, to_id, text, image, ts, edited, audio FROM messages ORDER BY ts ASC');
       if (!core.rows.length && !msgs.rows.length) {
         const legacy = readLegacyFile();
         if (legacy) {
@@ -229,12 +232,13 @@ function createPgStorage() {
         const m = { id: r.id, from: r.from_id, to: r.to_id, text: r.text || '', ts: Number(r.ts) };
         if (r.image) m.image = r.image;
         if (r.edited) m.edited = true;
+        if (r.audio) m.audio = r.audio;
         return m;
       });
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests, groups: db.groups };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
@@ -245,6 +249,9 @@ function createPgStorage() {
       await pool.query('UPDATE messages SET text = $2, edited = $3 WHERE id = $1', [m.id, m.text || '', !!m.edited]);
     },
     async deleteMessage(id) { await pool.query('DELETE FROM messages WHERE id = $1', [id]); },
+    async migrateSystem() {
+      await pool.query("UPDATE messages SET from_id = 'system' WHERE from_id = 'admin' AND (text LIKE '⚠️ %' OR text LIKE '🔔 %' OR text LIKE '✅ %' OR text LIKE '❌ %')");
+    },
     async removeMessagesFor(id) {
       await pool.query('DELETE FROM messages WHERE from_id = $1 OR to_id = $1', [id]);
     },
@@ -336,6 +343,14 @@ function newShareCode() {
 const getUser = (id) => db.users.find((u) => u.id === id);
 const findByPseudo = (p) => db.users.find((u) => u.pseudo.toLowerCase() === p.toLowerCase());
 
+function isGroupId(x) { return typeof x === 'string' && x.startsWith('g_'); }
+function getGroup(id) { return db.groups.find((g) => g.id === id); }
+function msgRooms(m) {
+  if (isGroupId(m.to)) { const g = getGroup(m.to); return g ? [...g.members] : [m.from]; }
+  return [m.from, m.to];
+}
+function emitMsg(ev, m, payload) { for (const r of msgRooms(m)) io.to(r).emit(ev, payload || m); }
+
 function cleanPseudo(x) {
   const p = String(x || '').trim().replace(/\s+/g, ' ');
   return p.length >= 2 && p.length <= 20 ? p : '';
@@ -379,13 +394,19 @@ const isOnline = (id) => (online.get(id) || 0) > 0;
 /* ------------------------ Représentation des users ------------------------ */
 
 const DEFAULT_APPEARANCE = { theme: 'dark', accent: 'violet' };
+const DEFAULT_ADMIN_DESC = 'Je suis là pour t\'aider si tu as des questions ou un souci avec l\'application. N\'hésite pas à m\'écrire !';
+const SYSTEM_DESC = 'Notifications automatiques de l\'application (avertissements, suppressions, annonces). Tu ne peux pas répondre ici : pour toute question, écris à l\'Administrateur.';
 
 function adminPublic() {
-  return { id: 'admin', pseudo: 'Système', nickname: '', name: 'Système', avatar: db.admin.avatar || '', isAdmin: true, online: isOnline('admin') };
+  return { id: 'admin', pseudo: 'Administrateur', nickname: '', name: 'Administrateur', avatar: db.admin.avatar || '', description: db.admin.description || DEFAULT_ADMIN_DESC, isAdmin: true, online: isOnline('admin') };
+}
+
+function systemPublic() {
+  return { id: 'system', pseudo: 'Système', nickname: '', name: 'Système', avatar: '', description: SYSTEM_DESC, isAdmin: false, isSystem: true, online: false };
 }
 
 function publicUser(u) {
-  return { id: u.id, pseudo: u.pseudo, nickname: u.nickname || '', name: u.nickname || u.pseudo, avatar: u.avatar || '', isAdmin: false, online: isOnline(u.id) };
+  return { id: u.id, pseudo: u.pseudo, nickname: u.nickname || '', name: u.nickname || u.pseudo, avatar: u.avatar || '', isAdmin: false, staff: !!u.admin, online: isOnline(u.id) };
 }
 
 function meFull(userId) {
@@ -396,6 +417,7 @@ function meFull(userId) {
       nickname: '',
       name: 'Administrateur',
       avatar: db.admin.avatar || '',
+      description: db.admin.description || '',
       isAdmin: true,
       staff: true,
       appearance: db.admin.appearance || DEFAULT_APPEARANCE,
@@ -418,6 +440,10 @@ function meFull(userId) {
 
 function canChat(a, b) {
   if (a === b) return false;
+  if (isGroupId(b)) { const g = getGroup(b); return !!g && g.members.includes(a); }
+  if (isGroupId(a)) return false;
+  if (b === 'system') return !!getUser(a);
+  if (a === 'system') return !!getUser(b);
   if (a === 'admin') return !!getUser(b);
   if (b === 'admin') return !!getUser(a);
   const ua = getUser(a);
@@ -432,13 +458,25 @@ function contactListFor(userId) {
   } else {
     list = viewer.contacts.map(getUser).filter(Boolean).map(publicUser);
   }
+  const groupsFor = viewer ? db.groups.filter((g) => g.members.includes(userId)) : [];
+  const gids = new Set(groupsFor.map((g) => g.id));
+  groupsFor.forEach((g) => {
+    list.push({
+      id: g.id, pseudo: g.name, nickname: '', name: g.name, avatar: '', isAdmin: false, isGroup: true, online: false, ownerId: g.ownerId,
+      members: g.members.map((mid) => ({ id: mid, name: displayName(userId, mid), avatar: avatarOf(mid) })),
+    });
+  });
   const last = {};
   for (const m of db.messages) {
     if (m.from === userId) last[m.to] = m;
     else if (m.to === userId) last[m.from] = m;
+    else if (gids.has(m.to)) last[m.to] = m;
   }
-  // « Système » n'apparaît qu'une fois qu'il a envoyé un message à l'utilisateur
-  if (viewer && last.admin) list.unshift(adminPublic());
+  // « Administrateur » est toujours présent ; « Système » seulement après sa première notification
+  if (viewer) {
+    list.unshift(adminPublic());
+    if (last.system) list.unshift(systemPublic());
+  }
   return list.map((c) => {
     const u = c.isAdmin ? null : getUser(c.id);
     const alias = (viewer && viewer.aliases && viewer.aliases[c.id]) || '';
@@ -546,7 +584,7 @@ app.get('/sw.js', (q, r) => {
 
 app.get('/uploads/:name', async (req, res) => {
   const name = req.params.name;
-  if (!/^[a-f0-9]{24}\.(jpg|png|webp|gif|mp4|webm|mov)$/.test(name)) return res.status(404).end();
+  if (!/^[a-f0-9]{24}\.(jpg|png|webp|gif|mp4|webm|mov|weba|m4a|ogg)$/.test(name)) return res.status(404).end();
   try {
     const buf = await storage.getFile(name);
     if (!buf) return res.status(404).end();
@@ -629,7 +667,7 @@ app.post('/api/login', (req, res) => {
     };
     db.users.push(user);
     created = true;
-    io.to('admin').emit('contacts:update');
+    io.to('staff').emit('contacts:update');
   }
   const token = newToken();
   db.sessions[token] = { userId: user.id, createdAt: Date.now() };
@@ -668,7 +706,7 @@ app.put('/api/me', auth, (req, res) => {
 });
 
 function updateMe(req, res) {
-  const { nickname, avatar: rawAvatar, pin, appearance } = req.body || {};
+  const { nickname, avatar: rawAvatar, pin, appearance, description } = req.body || {};
   const avatar = normalizeAvatar(rawAvatar);
   const user = req.isAdmin ? null : getUser(req.userId);
   let newNick;
@@ -706,6 +744,10 @@ function updateMe(req, res) {
   const target = req.isAdmin ? db.admin : user;
   let visible = false;
   if (newAppearance) target.appearance = newAppearance;
+  if (req.isAdmin && description !== undefined) {
+    const d = String(description || '').trim().slice(0, 300);
+    if (d !== (db.admin.description || '')) { db.admin.description = d; visible = true; }
+  }
   if (avatar !== undefined && avatar !== (target.avatar || '')) {
     target.avatar = avatar;
     visible = true;
@@ -735,7 +777,7 @@ app.post('/api/me/reset-code', auth, (req, res) => {
   const user = getUser(req.userId);
   user.shareCode = newShareCode(); // l'ancien code est définitivement invalidé
   saveDb();
-  io.to('admin').emit('contacts:update');
+  io.to('staff').emit('contacts:update');
   res.json({ shareCode: user.shareCode });
 });
 
@@ -766,18 +808,20 @@ app.post('/api/contacts', auth, (req, res) => {
 
 /* --------- Aides : messages & noms --------- */
 
-function addMessage(from, to, text, image) {
+function addMessage(from, to, text, image, audio) {
   const msg = { id: uid(), from, to, text, ts: Date.now() };
   if (image) msg.image = image;
+  if (audio) msg.audio = audio;
   db.messages.push(msg);
   storage.appendMessage(msg).catch((e) => console.error('Message non enregistré :', e.message));
   saveDb();
-  io.to(from).to(to).emit('message', msg);
+  emitMsg('message', msg);
   return msg;
 }
 
 function displayName(viewerId, targetId) {
-  if (targetId === 'admin') return 'Système';
+  if (targetId === 'admin') return 'Administrateur';
+  if (targetId === 'system') return 'Système';
   const t = getUser(targetId);
   if (!t) return 'Compte supprimé';
   const v = viewerId === 'admin' ? null : getUser(viewerId);
@@ -828,7 +872,7 @@ app.post('/api/contacts/:id/report', auth, (req, res) => {
   }
   db.reports.push({ id: uid(), reporterId: me.id, targetId: id, reason, ts: Date.now(), status: 'open' });
   saveDb();
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   res.json({ ok: true });
 });
 
@@ -838,15 +882,18 @@ app.get('/api/messages/:id', auth, (req, res) => {
   const other = req.params.id;
   if (!canChat(req.userId, other)) return res.status(403).json({ error: 'Conversation non autorisée.' });
   const me = req.userId;
-  const list = db.messages
-    .filter((m) => (m.from === me && m.to === other) || (m.from === other && m.to === me))
-    .slice(-500);
+  const list = (isGroupId(other)
+    ? db.messages.filter((m) => m.to === other)
+    : db.messages.filter((m) => (m.from === me && m.to === other) || (m.from === other && m.to === me))
+  ).slice(-500);
   res.json(list);
 });
 
 app.put('/api/messages/:mid', auth, async (req, res) => {
   const m = db.messages.find((x) => x.id === req.params.mid);
   if (!m || m.from !== req.userId) return res.status(404).json({ error: 'Message introuvable.' });
+  if (m.audio) return res.status(400).json({ error: 'Un vocal ne peut pas être modifié.' });
+  if (Date.now() - m.ts > 15 * 60 * 1000) return res.status(403).json({ error: 'Tu ne peux plus modifier ce message (15 minutes maximum).' });
   const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
   if (!text && !m.image) return res.status(400).json({ error: 'Le message ne peut pas être vide.' });
   if (text === m.text) return res.json(m);
@@ -854,7 +901,7 @@ app.put('/api/messages/:mid', auth, async (req, res) => {
   m.edited = true;
   saveDb();
   try { await storage.updateMessage(m); } catch (e) { console.error('Modification non enregistrée :', e.message); }
-  io.to(m.from).to(m.to).emit('message:edited', m);
+  emitMsg('message:edited', m);
   res.json(m);
 });
 
@@ -866,8 +913,9 @@ app.delete('/api/messages/:mid', auth, async (req, res) => {
   try {
     await storage.deleteMessage(m.id);
     if (m.image) await storage.delFile(m.image.split('/').pop());
+    if (m.audio) await storage.delFile(m.audio.split('/').pop());
   } catch (e) { console.error('Suppression :', e.message); }
-  io.to(m.from).to(m.to).emit('message:deleted', { id: m.id, from: m.from, to: m.to });
+  emitMsg('message:deleted', m, { id: m.id, from: m.from, to: m.to });
   res.json({ ok: true });
 });
 
@@ -915,7 +963,7 @@ function warnUser(userId, text) {
   const msg = String(text || '').trim().slice(0, 2000);
   if (!t || !msg) return;
   t.warnings = (t.warnings || 0) + 1;
-  addMessage('admin', t.id, '⚠️ ' + msg);
+  addMessage('system', t.id, '⚠️ ' + msg);
 }
 
 /* --------- Chaînes --------- */
@@ -1058,6 +1106,22 @@ app.post('/api/upload-video', auth, express.raw({ type: Object.keys(VIDEO_EXT), 
   }
 });
 
+const AUDIO_EXT = { 'audio/webm': 'weba', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/ogg': 'ogg' };
+const AUD_RE = /^\/uploads\/[a-f0-9]{24}\.(weba|m4a|ogg)$/;
+
+app.post('/api/upload-audio', auth, express.raw({ type: Object.keys(AUDIO_EXT), limit: '15mb' }), async (req, res) => {
+  const ext = AUDIO_EXT[String(req.headers['content-type'] || '').split(';')[0]];
+  if (!ext || !Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Vocal invalide.' });
+  const name = crypto.randomBytes(12).toString('hex') + '.' + ext;
+  try {
+    await storage.putFile(name, req.body);
+    res.json({ url: '/uploads/' + name });
+  } catch (e) {
+    console.error('Upload vocal :', e.message);
+    res.status(500).json({ error: 'Impossible d\'enregistrer le vocal.' });
+  }
+});
+
 /* --------- Stories (visibles 24 h) --------- */
 
 const STORY_TTL = 24 * 3600 * 1000;
@@ -1175,47 +1239,149 @@ app.get('/api/calls', auth, (req, res) => {
   const me = req.userId;
   res.json(
     db.calls
-      .filter((c) => c.from === me || c.to === me)
+      .filter((c) => c.from === me || c.to === me || (c.members || []).includes(me))
       .slice(-100)
       .reverse()
       .map((c) => {
-        const other = c.from === me ? c.to : c.from;
-        const u = getUser(other);
+        const isGroup = !!c.group;
+        const other = isGroup ? c.group : c.from === me ? c.to : c.from;
+        const g = isGroup ? getGroup(other) : null;
+        const u = isGroup ? null : getUser(other);
+        const joined = c.joined || [];
+        const status = isGroup ? (joined.includes(me) && c.status === 'ended' ? 'ended' : 'missed') : c.status;
         return {
           id: c.id,
           other,
-          name: displayName(me, other),
-          avatar: u ? u.avatar || '' : '',
+          group: isGroup,
+          name: isGroup ? (g ? g.name : 'Groupe supprimé') : displayName(me, other),
+          avatar: isGroup ? '' : other === 'admin' ? db.admin.avatar || '' : u ? u.avatar || '' : '',
           outgoing: c.from === me,
           ts: c.ts,
           duration: c.duration,
-          status: c.status,
-          callable: !!u && canChat(me, other),
+          status,
+          video: !!c.video,
+          callable: isGroup ? !!g && g.members.includes(me) : !!u && canChat(me, other),
         };
       })
   );
 });
 
+/* ---- Appels voix / vidéo, 1 à 1 ou en groupe (WebRTC maillé : chacun relié à chacun) ---- */
+
 const calls = new Map();   // callId -> appel en cours
-const inCall = new Map();  // userId -> callId
+const inCall = new Map();  // userId -> callId (dans l'appel, ou en train de sonner)
+const CALL_RING_MS = 45000;
+const GROUP_MAX = 8;
+
+const avatarOf = (id) => (id === 'admin' ? db.admin.avatar || '' : (getUser(id) || {}).avatar || '');
+
+function peerInfo(viewer, id, c) {
+  const m = c.media.get(id) || {};
+  return { id, name: displayName(viewer, id), avatar: avatarOf(id), cam: m.cam !== false, mic: m.mic !== false };
+}
+
+const callPeople = (c) => new Set([...c.invited, ...c.participants]);
 
 function endCall(callId, reason) {
   const c = calls.get(callId);
   if (!c) return;
   calls.delete(callId);
-  inCall.delete(c.from);
-  inCall.delete(c.to);
   clearTimeout(c.timer);
+  const everyone = callPeople(c);
+  for (const u of everyone) if (inCall.get(u) === callId) inCall.delete(u);
   let status = 'missed';
   let duration = 0;
   if (c.answeredAt) { status = 'ended'; duration = Math.round((Date.now() - c.answeredAt) / 1000); }
   else if (reason === 'declined') status = 'declined';
-  db.calls.push({ id: c.id, from: c.from, to: c.to, ts: c.ts, duration, status });
+  db.calls.push({ id: c.id, from: c.initiator, to: c.to, ts: c.ts, duration, status, video: !!c.video, group: c.groupId || '', members: [...c.members], joined: [...c.everJoined] });
   if (db.calls.length > 2000) db.calls = db.calls.slice(-2000);
   saveDb();
-  io.to(c.from).to(c.to).emit('call:ended', { callId, reason });
-  io.to(c.from).to(c.to).emit('calls:update');
+  for (const u of c.members) {
+    io.to(u).emit('call:ended', { callId, reason });
+    io.to(u).emit('calls:update');
+  }
 }
+
+function leaveCall(userId, reason) {
+  const callId = inCall.get(userId);
+  const c = callId && calls.get(callId);
+  inCall.delete(userId);
+  if (!c) return;
+  const wasIn = c.participants.delete(userId);
+  c.invited.delete(userId);
+  c.media.delete(userId);
+  io.to(userId).emit('calls:update');
+  const left = c.participants.size;
+  if (left === 0 || (left === 1 && c.invited.size === 0)) {
+    const r = reason === 'offline' ? 'offline' : reason === 'declined' && !wasIn ? 'declined' : 'hangup';
+    return endCall(callId, r);
+  }
+  if (wasIn) for (const p of c.participants) io.to(p).emit('call:peer-left', { callId, id: userId });
+}
+
+function ringExpiry(c) {
+  if (!calls.has(c.id)) return;
+  if (!c.answeredAt) return endCall(c.id, 'missed');
+  for (const u of [...c.invited]) {
+    c.invited.delete(u);
+    if (inCall.get(u) === c.id) inCall.delete(u);
+    io.to(u).emit('call:ended', { callId: c.id, reason: 'missed' });
+  }
+}
+
+/* ---- Groupes ---- */
+
+async function dropGroup(g) {
+  db.groups = db.groups.filter((x) => x.id !== g.id);
+  const gm = db.messages.filter((m) => m.to === g.id);
+  db.messages = db.messages.filter((m) => m.to !== g.id);
+  for (const c of [...calls.values()]) if (c.groupId === g.id) endCall(c.id, 'hangup');
+  saveDb();
+  try {
+    await storage.removeMessagesFor(g.id);
+    for (const m of gm) for (const f of [m.image, m.audio]) if (f) await storage.delFile(f.split('/').pop());
+  } catch (e) { console.error('Nettoyage groupe :', e.message); }
+  g.members.forEach((m) => io.to(m).emit('contacts:update'));
+}
+
+app.post('/api/groups', auth, (req, res) => {
+  if (req.isAdmin) return res.status(403).json({ error: 'Non disponible pour l\'administrateur.' });
+  const me = getUser(req.userId);
+  const name = String((req.body && req.body.name) || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2 || name.length > 30) return res.status(400).json({ error: 'Le nom du groupe doit faire entre 2 et 30 caractères.' });
+  const raw = Array.isArray(req.body && req.body.members) ? req.body.members.map(String) : [];
+  const ids = [...new Set(raw)].filter((x) => x !== me.id);
+  if (!ids.length) return res.status(400).json({ error: 'Choisis au moins un membre.' });
+  if (ids.length + 1 > GROUP_MAX) return res.status(400).json({ error: 'Un groupe peut avoir ' + GROUP_MAX + ' membres maximum.' });
+  if (ids.some((x) => !getUser(x) || !me.contacts.includes(x))) return res.status(400).json({ error: 'Tu ne peux ajouter que tes contacts.' });
+  if (db.groups.filter((g) => g.ownerId === me.id).length >= 10) return res.status(400).json({ error: 'Tu peux créer 10 groupes maximum.' });
+  const g = { id: 'g_' + uid(), name, ownerId: me.id, members: [me.id, ...ids], createdAt: Date.now() };
+  db.groups.push(g);
+  saveDb();
+  g.members.forEach((m) => io.to(m).emit('contacts:update'));
+  res.json({ id: g.id, name: g.name });
+});
+
+app.post('/api/groups/:id/leave', auth, async (req, res) => {
+  const g = getGroup(req.params.id);
+  if (!g || req.isAdmin || !g.members.includes(req.userId)) return res.status(404).json({ error: 'Groupe introuvable.' });
+  const cid = inCall.get(req.userId);
+  const cc = cid && calls.get(cid);
+  if (cc && cc.groupId === g.id) leaveCall(req.userId, 'hangup');
+  const before = [...g.members];
+  g.members = g.members.filter((x) => x !== req.userId);
+  if (g.ownerId === req.userId && g.members.length) g.ownerId = g.members[0];
+  if (g.members.length < 2) await dropGroup(g); else saveDb();
+  before.forEach((m) => io.to(m).emit('contacts:update'));
+  res.json({ ok: true });
+});
+
+app.delete('/api/groups/:id', auth, async (req, res) => {
+  const g = getGroup(req.params.id);
+  if (!g || g.ownerId !== req.userId) return res.status(404).json({ error: 'Groupe introuvable.' });
+  await dropGroup(g);
+  res.json({ ok: true });
+});
 
 /* --------- Administration --------- */
 
@@ -1243,14 +1409,20 @@ app.get('/api/admin/users', auth, adminOnly, (req, res) => {
 async function removeUser(id) {
   const idx = db.users.findIndex((u) => u.id === id);
   if (idx === -1) return false;
-  const cid = inCall.get(id);
-  if (cid) endCall(cid, 'offline');
+  leaveCall(id, 'offline');
 
-  const files = db.messages.filter((m) => (m.from === id || m.to === id) && m.image).map((m) => m.image.split('/').pop());
+  const files = db.messages.filter((m) => m.from === id || m.to === id).flatMap((m) => [m.image, m.audio]).filter(Boolean).map((x) => x.split('/').pop());
   db.stories.filter((s) => s.userId === id).forEach((s) => files.push(s.image.split('/').pop()));
   db.channels.filter((c) => c.ownerId === id).forEach((c) => chanFiles(c).forEach((n) => files.push(n)));
   db.channels = db.channels.filter((c) => c.ownerId !== id);
   db.channels.forEach((c) => { c.subscribers = c.subscribers.filter((x) => x !== id); });
+
+  for (const g of db.groups.slice()) {
+    if (!g.members.includes(id)) continue;
+    g.members = g.members.filter((x) => x !== id);
+    if (g.ownerId === id && g.members.length) g.ownerId = g.members[0];
+    if (g.members.length < 2) await dropGroup(g); else g.members.forEach((m) => io.to(m).emit('contacts:update'));
+  }
 
   db.users.splice(idx, 1);
   db.users.forEach((u) => {
@@ -1278,7 +1450,7 @@ async function removeUser(id) {
   io.in(id).disconnectSockets(true);
   io.emit('contacts:update');
   io.emit('stories:update');
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   return true;
 }
 
@@ -1326,13 +1498,13 @@ app.post('/api/admin/reports/:id/warn', auth, adminOnly, (req, res) => {
   if (!r || !t) return res.status(404).json({ error: 'Signalement ou compte introuvable.' });
   const text =
     String((req.body && req.body.text) || '').trim().slice(0, 2000) ||
-    'Attention ' + t.pseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte.';
+    'Attention ' + t.pseudo + ', vous avez été jugé(e) par un signalement. Faites attention : la prochaine fois, c\'est le bannissement définitif de votre compte. Si vous ne comprenez pas pourquoi, discutez avec l\'Administrateur.';
   t.warnings = (t.warnings || 0) + 1;
   r.status = 'warned';
   r.handledAt = Date.now();
-  addMessage('admin', t.id, '⚠️ ' + text);
+  addMessage('system', t.id, '⚠️ ' + text);
   saveDb();
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   res.json({ ok: true });
 });
 
@@ -1342,7 +1514,7 @@ app.post('/api/admin/reports/:id/dismiss', auth, adminOnly, (req, res) => {
   r.status = 'dismissed';
   r.handledAt = Date.now();
   saveDb();
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   res.json({ ok: true });
 });
 
@@ -1369,18 +1541,17 @@ app.post('/api/admin/users/:id/ban', auth, supremeOnly, (req, res) => {
     qr.handledAt = Date.now();
     const rr = qr.reportId && db.reports.find((x) => x.id === qr.reportId);
     if (rr) { rr.status = 'banned'; rr.handledAt = Date.now(); }
-    if (getUser(qr.requesterId)) addMessage('admin', qr.requesterId, '✅ Ta demande de bannissement concernant ' + u.pseudo + ' a été acceptée.');
+    if (getUser(qr.requesterId)) addMessage('system', qr.requesterId, '✅ Ta demande de bannissement concernant ' + u.pseudo + ' a été acceptée.');
     io.to('admin').emit('requests:update');
   }
   for (const t of Object.keys(db.sessions)) {
     if (db.sessions[t].userId === u.id) delete db.sessions[t];
   }
-  const cid = inCall.get(u.id);
-  if (cid) endCall(cid, 'offline');
+  leaveCall(u.id, 'offline');
   saveDb();
   io.to(u.id).emit('banned', { message: banMessage(u) });
   io.in(u.id).disconnectSockets(true);
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   io.emit('contacts:update');
   res.json({ ok: true });
 });
@@ -1417,7 +1588,7 @@ app.post('/api/admin/ban-requests', auth, adminOnly, (req, res) => {
   if (rep && rep.status === 'open') { rep.status = 'forwarded'; rep.handledAt = Date.now(); }
   saveDb();
   io.to('admin').emit('requests:update');
-  io.to('admin').emit('reports:update');
+  io.to('staff').emit('reports:update');
   res.json({ ok: true });
 });
 
@@ -1441,7 +1612,7 @@ app.post('/api/admin/ban-requests/:id/refuse', auth, supremeOnly, (req, res) => 
   q.status = 'refused';
   q.handledAt = Date.now();
   const t = getUser(q.targetId);
-  if (getUser(q.requesterId)) addMessage('admin', q.requesterId, '❌ Ta demande de bannissement concernant ' + (t ? t.pseudo : 'ce compte') + ' a été refusée.');
+  if (getUser(q.requesterId)) addMessage('system', q.requesterId, '❌ Ta demande de bannissement concernant ' + (t ? t.pseudo : 'ce compte') + ' a été refusée.');
   saveDb();
   io.to('admin').emit('requests:update');
   res.json({ ok: true });
@@ -1452,7 +1623,7 @@ app.post('/api/admin/broadcast', auth, supremeOnly, (req, res) => {
   const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
   if (!text) return res.status(400).json({ error: 'Écris le texte de la notification.' });
   let n = 0;
-  for (const u of db.users) { addMessage('admin', u.id, '🔔 ' + text); n++; }
+  for (const u of db.users) { addMessage('system', u.id, '🔔 ' + text); n++; }
   res.json({ ok: true, sent: n });
 });
 
@@ -1462,9 +1633,9 @@ app.post('/api/admin/users/:id/admin', auth, supremeOnly, (req, res) => {
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   u.admin = !!(req.body && req.body.value);
   saveDb();
-  if (u.admin) io.in(u.id).socketsJoin('admin'); else io.in(u.id).socketsLeave('admin');
+  if (u.admin) io.in(u.id).socketsJoin('staff'); else io.in(u.id).socketsLeave('staff');
   io.to(u.id).emit('me:update');
-  io.to('admin').emit('contacts:update');
+  io.to('staff').emit('contacts:update');
   res.json({ ok: true, admin: u.admin });
 });
 
@@ -1548,7 +1719,7 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   const id = socket.userId;
   socket.join(id);
-  { const su = getUser(id); if (su && su.admin) socket.join('admin'); }
+  { const su = getUser(id); if (su && su.admin) socket.join('staff'); if (id === 'admin') socket.join('staff'); }
 
   const n = (online.get(id) || 0) + 1;
   online.set(id, n);
@@ -1560,56 +1731,90 @@ io.on('connection', (socket) => {
     const to = data && String(data.to || '');
     const text = data && data.text ? String(data.text).trim().slice(0, 2000) : '';
     const image = data && data.image ? String(data.image) : '';
+    const audio = data && data.audio ? String(data.audio) : '';
     if (image && !/^\/uploads\/[a-f0-9]{24}\.(jpg|png|webp|gif)$/.test(image)) return reply({ error: 'Image invalide.' });
-    if (!text && !image) return reply({ error: 'Message vide.' });
-    if (to === 'admin') return reply({ error: 'Les notifications du Système sont en lecture seule.' });
+    if (audio && !AUD_RE.test(audio)) return reply({ error: 'Vocal invalide.' });
+    if (!text && !image && !audio) return reply({ error: 'Message vide.' });
+    if (to === 'system') return reply({ error: 'Les notifications du Système sont en lecture seule.' });
     if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas écrire à cette personne.' });
 
-    addMessage(id, to, text, image);
+    addMessage(id, to, text, image, audio);
     reply({ ok: true });
   });
 
   socket.on('call:invite', (data, cb) => {
     const reply = typeof cb === 'function' ? cb : () => {};
     const to = String((data && data.to) || '');
-    if (to === 'admin') return reply({ error: 'Tu ne peux pas appeler l\'administrateur.' });
-    if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas appeler cette personne.' });
-    if (!isOnline(to)) return reply({ error: 'Cette personne est hors ligne.' });
-    if (inCall.has(id) || inCall.has(to)) return reply({ error: 'Ligne occupée.' });
-    const c = { id: uid(), from: id, to, ts: Date.now(), answeredAt: 0 };
-    c.timer = setTimeout(() => endCall(c.id, 'missed'), 45000);
+    const video = !!(data && data.video);
+    if (inCall.has(id)) return reply({ error: 'Tu es déjà en appel.' });
+    let invitees = [];
+    let g = null;
+    if (isGroupId(to)) {
+      g = getGroup(to);
+      if (!g || !g.members.includes(id)) return reply({ error: 'Tu ne peux pas appeler ce groupe.' });
+      invitees = g.members.filter((m) => m !== id && isOnline(m) && !inCall.has(m));
+      if (!invitees.length) return reply({ error: 'Personne d\'autre n\'est disponible dans ce groupe pour le moment.' });
+    } else {
+      if (to === 'admin' || to === 'system') return reply({ error: 'Tu ne peux pas appeler ce compte.' });
+      if (!canChat(id, to)) return reply({ error: 'Tu ne peux pas appeler cette personne.' });
+      if (!isOnline(to)) return reply({ error: 'Cette personne est hors ligne.' });
+      if (inCall.has(to)) return reply({ error: 'Ligne occupée.' });
+      invitees = [to];
+    }
+    const c = {
+      id: uid(), initiator: id, to, groupId: g ? g.id : '', video, ts: Date.now(), answeredAt: 0,
+      participants: new Set([id]), invited: new Set(invitees), members: new Set([id, ...invitees]),
+      everJoined: new Set([id]), media: new Map(), timer: null,
+    };
+    c.timer = setTimeout(() => ringExpiry(c), CALL_RING_MS);
     calls.set(c.id, c);
     inCall.set(id, c.id);
-    inCall.set(to, c.id);
-    io.to(to).emit('call:incoming', { callId: c.id, from: id, name: displayName(to, id) });
+    for (const u of invitees) {
+      inCall.set(u, c.id);
+      io.to(u).emit('call:incoming', { callId: c.id, from: id, name: displayName(u, id), video, groupName: g ? g.name : '' });
+    }
     reply({ ok: true, callId: c.id });
   });
 
   socket.on('call:accept', (data) => {
     const c = calls.get(data && data.callId);
-    if (!c || c.to !== id || c.answeredAt) return;
-    clearTimeout(c.timer);
-    c.answeredAt = Date.now();
-    io.to(c.from).emit('call:accepted', { callId: c.id });
+    if (!c || !c.invited.has(id) || inCall.get(id) !== c.id) return;
+    if (c.participants.size >= GROUP_MAX) return;
+    c.invited.delete(id);
+    const existing = [...c.participants];
+    c.participants.add(id);
+    c.everJoined.add(id);
+    if (!c.answeredAt) c.answeredAt = Date.now();
+    socket.emit('call:joined', { callId: c.id, video: c.video, peers: existing.map((p) => peerInfo(id, p, c)) });
+    for (const p of existing) io.to(p).emit('call:peer-joined', { callId: c.id, peer: peerInfo(p, id, c) });
   });
 
   socket.on('call:signal', (data) => {
     const c = calls.get(data && data.callId);
-    if (!c || (c.from !== id && c.to !== id)) return;
-    io.to(c.from === id ? c.to : c.from).emit('call:signal', { callId: c.id, data: data.data });
+    const to = String((data && data.to) || '');
+    if (!c || !c.participants.has(id) || !c.participants.has(to)) return;
+    io.to(to).emit('call:signal', { callId: c.id, from: id, data: data.data });
+  });
+
+  socket.on('call:media', (data) => {
+    const c = calls.get(data && data.callId);
+    if (!c || !c.participants.has(id)) return;
+    const st = { cam: !!data.cam, mic: !!data.mic };
+    c.media.set(id, st);
+    for (const p of c.participants) if (p !== id) io.to(p).emit('call:media', { callId: c.id, from: id, cam: st.cam, mic: st.mic });
   });
 
   socket.on('call:end', (data) => {
     const c = calls.get(data && data.callId);
-    if (!c || (c.from !== id && c.to !== id)) return;
-    endCall(c.id, !c.answeredAt && c.to === id ? 'declined' : 'hangup');
+    if (!c || inCall.get(id) !== c.id) return;
+    leaveCall(id, c.participants.has(id) ? 'hangup' : 'declined');
   });
 
   socket.on('disconnect', () => {
     const left = (online.get(id) || 1) - 1;
     if (left <= 0) {
       online.delete(id);
-      if (inCall.has(id)) endCall(inCall.get(id), 'offline');
+      leaveCall(id, 'offline');
       io.emit('presence', { id, online: false });
     } else {
       online.set(id, left);
@@ -1624,6 +1829,14 @@ async function boot() {
   await storage.init();
   const loaded = await storage.load();
   db = normalizeDb(loaded);
+  let migrated = 0;
+  for (const m of db.messages) {
+    if (m.from === 'admin' && /^(⚠️|🔔|✅|❌) /.test(m.text || '')) { m.from = 'system'; migrated++; }
+  }
+  if (migrated) {
+    console.log('Anciennes notifications déplacées vers « Système » :', migrated);
+    if (storage.migrateSystem) await storage.migrateSystem();
+  }
   pruneSessions();
   scheduleSave(); // crée / migre immédiatement les données
   purgeStories();
