@@ -1,0 +1,16 @@
+{
+  "name": "tonin-conect",
+  "version": "1.0.0",
+  "description": "Tonin Conect - messagerie web en temps réel avec comptes, codes de partage et compte administrateur",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
