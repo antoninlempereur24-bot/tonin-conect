@@ -73,6 +73,7 @@ const emptyDb = () => ({
   banRequests: [],
   groups: [],
   banLog: [],
+  accessLog: [],
 });
 
 let db = emptyDb();
@@ -93,6 +94,7 @@ function normalizeDb(d) {
     banRequests: Array.isArray(d.banRequests) ? d.banRequests : [],
     groups: Array.isArray(d.groups) ? d.groups : [],
     banLog: Array.isArray(d.banLog) ? d.banLog : [],
+    accessLog: Array.isArray(d.accessLog) ? d.accessLog : [],
   };
 }
 
@@ -242,7 +244,7 @@ function createPgStorage() {
       return data;
     },
     async saveCore() {
-      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests, groups: db.groups, banLog: db.banLog };
+      const core = { users: db.users, sessions: db.sessions, admin: db.admin, reports: db.reports, stories: db.stories, calls: db.calls, channels: db.channels, banRequests: db.banRequests, groups: db.groups, banLog: db.banLog, accessLog: db.accessLog };
       await pool.query(
         "INSERT INTO kv (key, value) VALUES ('core', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(core)]
@@ -1014,6 +1016,47 @@ app.post('/api/upload', auth, async (req, res) => {
   }
 });
 
+/* --------- Galerie photo personnelle (appareil photo) --------- */
+
+const GALLERY_MAX = 300;
+
+app.get('/api/gallery', auth, (req, res) => {
+  const u = req.isAdmin ? null : getUser(req.userId);
+  res.json(u ? (u.gallery || []).slice().sort((a, b) => b.ts - a.ts) : []);
+});
+
+app.post('/api/gallery', auth, async (req, res) => {
+  const u = req.isAdmin ? null : getUser(req.userId);
+  if (!u) return res.status(403).json({ error: 'Non disponible pour l\'administrateur.' });
+  if (!Array.isArray(u.gallery)) u.gallery = [];
+  if (u.gallery.length >= GALLERY_MAX) return res.status(400).json({ error: 'Galerie pleine (' + GALLERY_MAX + ' photos max). Supprime-en quelques-unes.' });
+  const m = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String((req.body && req.body.data) || ''));
+  if (!m) return res.status(400).json({ error: 'Image invalide.' });
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 6 * 1024 * 1024) return res.status(413).json({ error: 'Image trop lourde (6 Mo max).' });
+  const name = crypto.randomBytes(12).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
+  try {
+    await storage.putFile(name, buf);
+  } catch (e) {
+    console.error('Galerie :', e.message);
+    return res.status(500).json({ error: 'Impossible d\'enregistrer la photo.' });
+  }
+  const item = { id: uid(), url: '/uploads/' + name, ts: Date.now() };
+  u.gallery.push(item);
+  saveDb();
+  res.json(item);
+});
+
+app.delete('/api/gallery/:id', auth, async (req, res) => {
+  const u = req.isAdmin ? null : getUser(req.userId);
+  const i = u && Array.isArray(u.gallery) ? u.gallery.findIndex((g) => g.id === req.params.id) : -1;
+  if (i === -1) return res.status(404).json({ error: 'Photo introuvable.' });
+  const [g] = u.gallery.splice(i, 1);
+  saveDb();
+  try { await storage.delFile(g.url.split('/').pop()); } catch (e) { /* ignore */ }
+  res.json({ ok: true });
+});
+
 /* --------- Bans (suspensions avec durée) --------- */
 
 const PERM_BAN = 32503680000000; // an 3000 = définitif
@@ -1552,6 +1595,7 @@ async function removeUser(id) {
 
   const files = db.messages.filter((m) => m.from === id || m.to === id).flatMap((m) => [m.image, m.audio]).filter(Boolean).map((x) => x.split('/').pop());
   db.stories.filter((s) => s.userId === id).forEach((s) => files.push(s.image.split('/').pop()));
+  (db.users[idx].gallery || []).forEach((g) => files.push(g.url.split('/').pop()));
   db.channels.filter((c) => c.ownerId === id).forEach((c) => chanFiles(c).forEach((n) => files.push(n)));
   db.channels = db.channels.filter((c) => c.ownerId !== id);
   db.channels.forEach((c) => { c.subscribers = c.subscribers.filter((x) => x !== id); });
@@ -1663,8 +1707,8 @@ app.put('/api/admin/users/:id/names', auth, supremeOnly, (req, res) => {
   res.json({ ok: true, pseudo: u.pseudo, nickname: u.nickname || '' });
 });
 
-// Vue d'ensemble d'un compte (lecture seule) pour les administrateurs : pas de contenu des messages privés
-app.get('/api/admin/users/:id/overview', auth, adminOnly, (req, res) => {
+// Vue d'ensemble d'un compte (lecture seule) : réservée à l'administrateur suprême
+app.get('/api/admin/users/:id/overview', auth, supremeOnly, (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   const now = Date.now();
@@ -1727,6 +1771,97 @@ app.get('/api/admin/users/:id/overview', auth, adminOnly, (req, res) => {
         endedAt: e.endedAt || 0,
         endedBy: e.endedBy || '',
       })),
+  });
+});
+
+/* --------- Vue détaillée d'un compte (administrateur suprême, lecture seule) --------- */
+
+function logAccess(req, u, action) {
+  db.accessLog.push({ id: uid(), ts: Date.now(), targetId: u.id, targetPseudo: u.pseudo, action });
+  if (db.accessLog.length > 2000) db.accessLog = db.accessLog.slice(-2000);
+  saveDb();
+}
+
+// Autre extrémité d'un message du point de vue du compte u (null si le message ne le concerne pas)
+function convKey(m, u) {
+  if (isGroupId(m.to)) {
+    const g = getGroup(m.to);
+    return g && g.members.includes(u.id) ? m.to : null;
+  }
+  if (m.from === u.id) return m.to;
+  if (m.to === u.id) return m.from;
+  return null;
+}
+
+function convInfo(u, other) {
+  if (isGroupId(other)) {
+    const g = getGroup(other);
+    return { id: other, group: true, name: g ? g.name : 'Groupe supprimé', avatar: '' };
+  }
+  const o = getUser(other);
+  return { id: other, group: false, name: displayName('admin', other), avatar: o ? o.avatar || '' : other === 'admin' ? db.admin.avatar || '' : '' };
+}
+
+app.get('/api/admin/users/:id/deep', auth, supremeOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  logAccess(req, u, 'open');
+
+  const convs = new Map();
+  const photos = [];
+  for (const m of db.messages) {
+    const other = convKey(m, u);
+    if (!other) continue;
+    let c = convs.get(other);
+    if (!c) { c = Object.assign(convInfo(u, other), { count: 0, last: null }); convs.set(other, c); }
+    c.count++;
+    c.last = { text: m.text || '', image: !!m.image, audio: !!m.audio, ts: m.ts, mine: m.from === u.id };
+    if (m.image) photos.push({ url: m.image, ts: m.ts, source: m.from === u.id ? 'sent' : 'received', context: c.name });
+  }
+  for (const st of db.stories) if (st.userId === u.id) photos.push({ url: st.image, ts: st.ts, source: 'story', context: st.text || '' });
+  for (const g of u.gallery || []) photos.push({ url: g.url, ts: g.ts, source: 'gallery', context: '' });
+  photos.sort((a, b) => b.ts - a.ts);
+
+  const calls = db.calls
+    .filter((c) => c.from === u.id || c.to === u.id || (c.members || []).includes(u.id))
+    .slice(-100)
+    .reverse()
+    .map((c) => {
+      const isGroup = !!c.group;
+      const other = isGroup ? c.group : c.from === u.id ? c.to : c.from;
+      const joined = c.joined || [];
+      return {
+        id: c.id,
+        name: convInfo(u, other).name,
+        group: isGroup,
+        outgoing: c.from === u.id,
+        ts: c.ts,
+        duration: c.duration,
+        status: isGroup ? (joined.includes(u.id) && c.status === 'ended' ? 'ended' : 'missed') : c.status,
+        video: !!c.video,
+      };
+    });
+
+  res.json({
+    user: { id: u.id, pseudo: u.pseudo, nickname: u.nickname || '', avatar: u.avatar || '' },
+    conversations: [...convs.values()].sort((a, b) => b.last.ts - a.last.ts),
+    calls,
+    photos: photos.slice(0, 300),
+    accessLog: db.accessLog.filter((e) => e.targetId === u.id).slice(-5).reverse().map((e) => ({ ts: e.ts, action: e.action })),
+  });
+});
+
+app.get('/api/admin/users/:id/deep/conversation/:other', auth, supremeOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  const other = req.params.other;
+  const info = convInfo(u, other);
+  const list = db.messages.filter((m) => convKey(m, u) === other).slice(-500);
+  logAccess(req, u, 'conversation:' + info.name);
+  const nameOf = (id) => (id === u.id ? u.pseudo : displayName('admin', id));
+  res.json({
+    conversation: info,
+    messages: list.map((m) => ({ id: m.id, from: m.from, fromName: nameOf(m.from), mine: m.from === u.id, text: m.text || '', image: m.image || '', audio: m.audio || '', edited: !!m.edited, ts: m.ts })),
   });
 });
 

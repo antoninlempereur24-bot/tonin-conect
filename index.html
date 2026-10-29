@@ -64,6 +64,7 @@
           <small id="me-sub"></small>
         </div>
         <div class="side-actions">
+          <button id="btn-camera" class="icon-btn hidden" title="Appareil photo">📷</button>
           <button id="btn-admin" class="icon-btn hidden" title="Administration">🛠️<span id="reports-badge" class="badge hidden">0</span></button>
           <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
           <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
@@ -632,6 +633,66 @@
   </div>
 
   <div id="toast"></div>
+
+  <!-- ====================== FENÊTRE PLEIN ÉCRAN : APPAREIL PHOTO ====================== -->
+  <div id="modal-camera" class="modal fullscreen hidden">
+    <div class="cam-screen">
+      <header class="acc-top">
+        <button class="icon-btn" data-close title="Fermer">✕</button>
+        <h2>📷 Appareil photo</h2>
+      </header>
+      <div class="cam-view">
+        <video id="cam-video" playsinline autoplay muted></video>
+        <img id="cam-shot" class="hidden" alt="Photo prise" />
+        <p id="cam-msg" class="cam-msg hidden"></p>
+      </div>
+      <div id="cam-bar" class="cam-bar">
+        <button id="cam-gallery" class="cam-thumb" type="button" title="Ma galerie"><img id="cam-thumb" class="hidden" alt="" /><span id="cam-thumb-empty">🖼</span></button>
+        <button id="cam-shutter" class="cam-shutter" type="button" title="Prendre la photo"></button>
+        <button id="cam-flip" class="icon-btn cam-flip" type="button" title="Changer de caméra">🔄</button>
+      </div>
+      <div id="cam-review" class="cam-review hidden">
+        <button id="cam-retake" class="btn" type="button">↺ Reprendre</button>
+        <button id="cam-save" class="btn primary" type="button">💾 Enregistrer</button>
+      </div>
+      <input id="cam-file" type="file" accept="image/*" capture="environment" hidden />
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : GALERIE ====================== -->
+  <div id="modal-gallery" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🖼 Ma galerie</h2>
+      <p id="gal-count" class="hint"></p>
+      <div id="gal-grid" class="gal-grid"></div>
+    </div>
+  </div>
+
+  <!-- ====================== FENÊTRE PLEIN ÉCRAN : COMPTE EN PROFONDEUR (admin suprême) ====================== -->
+  <div id="modal-deep" class="modal fullscreen hidden">
+    <div class="acc-screen">
+      <header class="acc-top">
+        <button id="deep-back" class="icon-btn" type="button" title="Retour">←</button>
+        <h2 id="deep-title">🔎 Compte</h2>
+        <button class="icon-btn" data-close title="Fermer">✕</button>
+      </header>
+      <nav class="deep-tabs">
+        <button type="button" data-deep-tab="messages" class="active">💬 Messages</button>
+        <button type="button" data-deep-tab="calls">📞 Appels</button>
+        <button type="button" data-deep-tab="photos">🖼 Photos</button>
+      </nav>
+      <div class="acc-main deep-main"><div id="deep-body" class="acc-detail"></div></div>
+      <p class="hint deep-foot">🔒 Lecture seule · chaque consultation est enregistrée dans le journal d'accès.</p>
+    </div>
+  </div>
+
+  <!-- ====================== VISIONNEUSE D'IMAGE ====================== -->
+  <div id="modal-viewer" class="modal lightbox hidden">
+    <button class="modal-close" data-close>✕</button>
+    <img id="viewer-img" alt="" />
+    <button id="viewer-del" class="btn danger hidden" type="button">🗑 Supprimer</button>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/script.js"></script>

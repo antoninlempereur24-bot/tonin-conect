@@ -1027,7 +1027,7 @@
   /* ---------------- Administration ---------------- */
 
   $('btn-admin').addEventListener('click', () => {
-    document.querySelectorAll('[data-hub="broadcast"],[data-hub="requests"]').forEach((b) => b.classList.toggle('hidden', !state.me.isAdmin));
+    document.querySelectorAll('[data-hub="broadcast"],[data-hub="requests"],[data-hub="accounts"]').forEach((b) => b.classList.toggle('hidden', !state.me.isAdmin));
     refreshReportsBadge();
     openModal('modal-hub');
   });
@@ -1374,7 +1374,8 @@
     const run = async (fn, okText) => {
       try { await fn(); if (okText) toast(okText); reload(); } catch (err) { toast(err.message); }
     };
-    if (supreme) btn('💬 Discuter', 'primary', () => { closeModal('modal-account'); closeModal('modal-admin'); openChat(u.id); });
+    if (supreme) btn('🔎 Voir en profondeur', 'primary', () => openDeep(u));
+    if (supreme) btn('💬 Discuter', '', () => { closeModal('modal-account'); closeModal('modal-admin'); openChat(u.id); });
     if (supreme || (!u.bannedUntil && !u.admin)) {
       btn(u.bannedUntil ? 'Débannir' : (supreme ? 'Bannir' : 'Demander un ban'), u.bannedUntil ? '' : 'danger', () => {
         if (!u.bannedUntil) return openBan(u.id, u.pseudo, reload);
@@ -1480,6 +1481,333 @@
   $('acc-search').addEventListener('input', (e) => { accState.q = e.target.value; renderAccountList(); });
   $('acc-back').addEventListener('click', () => $('acc-screen').classList.remove('show-detail'));
 
+  /* ---------------- Compte en profondeur (administrateur suprême, lecture seule) ---------------- */
+
+  const deep = { id: null, tab: 'messages', data: null, conv: null };
+
+  function viewImage(url, onDelete) {
+    $('viewer-img').src = url;
+    const del = $('viewer-del');
+    del.classList.toggle('hidden', !onDelete);
+    del.onclick = onDelete || null;
+    openModal('modal-viewer');
+  }
+
+  async function openDeep(u) {
+    deep.id = u.id;
+    deep.tab = 'messages';
+    deep.conv = null;
+    deep.data = null;
+    $('deep-title').textContent = '🔎 ' + accName(u);
+    $('modal-deep').classList.remove('in-thread');
+    $('deep-body').innerHTML = '';
+    $('deep-body').appendChild(accEl('p', 'hint acc-placeholder', 'Chargement…'));
+    openModal('modal-deep');
+    renderDeepTabs();
+    try {
+      deep.data = await api('/api/admin/users/' + u.id + '/deep');
+    } catch (err) {
+      toast(err.message);
+      closeModal('modal-deep');
+      return;
+    }
+    renderDeep();
+  }
+
+  function renderDeepTabs() {
+    document.querySelectorAll('[data-deep-tab]').forEach((b) => b.classList.toggle('active', b.dataset.deepTab === deep.tab));
+  }
+
+  document.querySelectorAll('[data-deep-tab]').forEach((b) => b.addEventListener('click', () => {
+    deep.tab = b.dataset.deepTab;
+    deep.conv = null;
+    $('modal-deep').classList.remove('in-thread');
+    renderDeepTabs();
+    renderDeep();
+  }));
+
+  $('deep-back').addEventListener('click', () => {
+    deep.conv = null;
+    $('modal-deep').classList.remove('in-thread');
+    renderDeep();
+  });
+
+  function renderDeep() {
+    const box = $('deep-body');
+    const d = deep.data;
+    box.innerHTML = '';
+    if (!d) return;
+    if (deep.tab === 'messages') return renderDeepConversations(box, d);
+    if (deep.tab === 'calls') return renderDeepCalls(box, d);
+    renderDeepPhotos(box, d);
+  }
+
+  function deepPreview(l) {
+    const who = l.mine ? 'Lui : ' : '';
+    return who + (l.audio ? '🎤 Message vocal' : l.image ? (l.text ? '📷 ' + l.text : '📷 Photo') : l.text);
+  }
+
+  function renderDeepConversations(box, d) {
+    const card = accEl('div', 'acc-card');
+    card.appendChild(accEl('h4', '', 'Conversations (' + d.conversations.length + ')'));
+    if (!d.conversations.length) card.appendChild(accEl('p', 'hint', 'Aucune conversation.'));
+    d.conversations.forEach((c) => {
+      const r = accEl('button', 'acc-line');
+      r.type = 'button';
+      r.appendChild(makeAvatar({ avatar: c.avatar, name: c.name, pseudo: c.name, isGroup: c.group }));
+      const t = accEl('div', 'acc-line-text');
+      t.appendChild(accEl('span', '', (c.group ? '👥 ' : '') + c.name));
+      t.appendChild(accEl('small', '', deepPreview(c.last) + ' · ' + fmtDate(c.last.ts) + ' ' + fmtTime(c.last.ts) + ' · ' + plural(c.count, 'message', 'messages')));
+      r.appendChild(t);
+      r.addEventListener('click', () => openDeepConversation(c));
+      card.appendChild(r);
+    });
+    box.appendChild(card);
+  }
+
+  async function openDeepConversation(c) {
+    deep.conv = c.id;
+    $('modal-deep').classList.add('in-thread');
+    const box = $('deep-body');
+    box.innerHTML = '';
+    box.appendChild(accEl('p', 'hint acc-placeholder', 'Chargement…'));
+    let r;
+    try {
+      r = await api('/api/admin/users/' + deep.id + '/deep/conversation/' + encodeURIComponent(c.id));
+    } catch (err) {
+      toast(err.message);
+      return;
+    }
+    if (deep.conv !== c.id) return;
+    box.innerHTML = '';
+    box.appendChild(accEl('h4', 'deep-conv-title', (c.group ? '👥 ' : '') + c.name));
+    const th = accEl('div', 'deep-thread');
+    if (!r.messages.length) th.appendChild(accEl('p', 'hint', 'Aucun message.'));
+    let lastDay = '';
+    r.messages.forEach((m) => {
+      const day = fmtDate(m.ts);
+      if (day !== lastDay) {
+        lastDay = day;
+        const sep = accEl('p', 'hint', day);
+        sep.style.cssText = 'text-align:center;margin:8px 0 2px';
+        th.appendChild(sep);
+      }
+      const b = accEl('div', 'deep-msg' + (m.mine ? ' mine' : ''));
+      if (c.group && !m.mine) b.appendChild(accEl('div', 'sender', m.fromName));
+      if (m.image) {
+        const img = document.createElement('img');
+        img.src = m.image;
+        img.alt = 'Photo';
+        img.loading = 'lazy';
+        img.addEventListener('click', () => viewImage(m.image));
+        b.appendChild(img);
+      }
+      if (m.audio) {
+        const au = document.createElement('audio');
+        au.controls = true;
+        au.preload = 'metadata';
+        au.src = m.audio;
+        b.appendChild(au);
+      }
+      if (m.text) b.appendChild(accEl('div', '', m.text));
+      b.appendChild(accEl('time', '', (m.edited ? 'modifié · ' : '') + fmtTime(m.ts)));
+      th.appendChild(b);
+    });
+    box.appendChild(th);
+    const main = box.parentElement;
+    main.scrollTop = main.scrollHeight;
+  }
+
+  function renderDeepCalls(box, d) {
+    const card = accEl('div', 'acc-card');
+    card.appendChild(accEl('h4', '', 'Derniers appels (' + d.calls.length + ')'));
+    if (!d.calls.length) card.appendChild(accEl('p', 'hint', 'Aucun appel.'));
+    const dur = (s) => Math.floor(s / 60) + ' min ' + String(s % 60).padStart(2, '0') + ' s';
+    d.calls.forEach((c) => {
+      let label;
+      if (c.outgoing) label = c.status === 'ended' ? '↗ Sortant' : c.status === 'declined' ? '↗ Refusé' : '↗ Sans réponse';
+      else label = c.status === 'ended' ? '↙ Reçu' : c.status === 'declined' ? '↙ Refusé' : '↙ Manqué';
+      const r = accEl('div', 'acc-line');
+      const t = accEl('div', 'acc-line-text');
+      t.appendChild(accEl('span', '', (c.video ? '🎥 ' : '📞 ') + (c.group ? '👥 ' : '') + c.name));
+      t.appendChild(accEl('small', '', label + ' · ' + fmtDate(c.ts) + ' ' + fmtTime(c.ts) + (c.duration ? ' · ' + dur(c.duration) : '')));
+      r.appendChild(t);
+      card.appendChild(r);
+    });
+    box.appendChild(card);
+  }
+
+  function renderDeepPhotos(box, d) {
+    const SRC = { gallery: '🖼 Galerie', story: '📸 Story', sent: '↗ Envoyée', received: '↙ Reçue' };
+    const card = accEl('div', 'acc-card');
+    card.appendChild(accEl('h4', '', 'Photos (' + d.photos.length + ')'));
+    if (!d.photos.length) card.appendChild(accEl('p', 'hint', 'Aucune photo.'));
+    const grid = accEl('div', 'acc-stories');
+    d.photos.forEach((p) => {
+      const it = accEl('div', 'acc-story');
+      const img = document.createElement('img');
+      img.src = p.url;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.style.cursor = 'pointer';
+      img.addEventListener('click', () => viewImage(p.url));
+      it.appendChild(img);
+      it.appendChild(accEl('small', '', (SRC[p.source] || p.source) + (p.context && p.source !== 'story' ? ' · ' + p.context : '') + ' · ' + fmtDate(p.ts)));
+      grid.appendChild(it);
+    });
+    card.appendChild(grid);
+    box.appendChild(card);
+  }
+
+  /* ---------------- Appareil photo & galerie personnelle ---------------- */
+
+  const cam = { stream: null, facing: 'environment', shot: '', gallery: [] };
+
+  function camMessage(text) {
+    const m = $('cam-msg');
+    m.textContent = text || '';
+    m.classList.toggle('hidden', !text);
+  }
+
+  function stopCamera() {
+    if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
+    cam.stream = null;
+    $('cam-video').srcObject = null;
+  }
+
+  async function startCamera() {
+    stopCamera();
+    camMessage('');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return camMessage('Caméra indisponible ici : appuie sur le bouton rond pour prendre ou choisir une photo.');
+    }
+    try {
+      cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing }, audio: false });
+      if ($('modal-camera').classList.contains('hidden')) return stopCamera();
+      const v = $('cam-video');
+      v.srcObject = cam.stream;
+      v.classList.toggle('mirror', cam.facing === 'user');
+    } catch (e) {
+      camMessage('Accès à la caméra impossible : appuie sur le bouton rond pour prendre ou choisir une photo.');
+    }
+  }
+
+  function camLiveMode() {
+    cam.shot = '';
+    $('cam-shot').classList.add('hidden');
+    $('cam-video').classList.remove('hidden');
+    $('cam-bar').classList.remove('hidden');
+    $('cam-review').classList.add('hidden');
+  }
+
+  function camReviewMode(dataUrl) {
+    cam.shot = dataUrl;
+    $('cam-shot').src = dataUrl;
+    $('cam-shot').classList.remove('hidden');
+    $('cam-video').classList.add('hidden');
+    $('cam-bar').classList.add('hidden');
+    $('cam-review').classList.remove('hidden');
+  }
+
+  function renderThumb() {
+    const first = cam.gallery[0];
+    $('cam-thumb').classList.toggle('hidden', !first);
+    $('cam-thumb-empty').classList.toggle('hidden', !!first);
+    if (first) $('cam-thumb').src = first.url;
+  }
+
+  async function loadGallery() {
+    cam.gallery = await api('/api/gallery');
+    renderThumb();
+  }
+
+  $('btn-camera').addEventListener('click', async () => {
+    camLiveMode();
+    openModal('modal-camera');
+    startCamera();
+    try { await loadGallery(); } catch (e) { /* ignore */ }
+  });
+
+  // La caméra s'éteint dès que la fenêtre se ferme (croix, Échap ou clic à côté)
+  new MutationObserver(() => {
+    if ($('modal-camera').classList.contains('hidden')) stopCamera();
+  }).observe($('modal-camera'), { attributes: true, attributeFilter: ['class'] });
+
+  $('cam-flip').addEventListener('click', () => {
+    cam.facing = cam.facing === 'user' ? 'environment' : 'user';
+    startCamera();
+  });
+
+  $('cam-shutter').addEventListener('click', () => {
+    const v = $('cam-video');
+    if (!cam.stream || !v.videoWidth) return $('cam-file').click();
+    const k = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k);
+    c.height = Math.round(v.videoHeight * k);
+    const ctx = c.getContext('2d');
+    if (cam.facing === 'user') { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    camReviewMode(c.toDataURL('image/jpeg', 0.85));
+  });
+
+  $('cam-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const img = await readImage(f);
+      camReviewMode(renderToDataUrl(img, { max: 1600, quality: 0.85 }));
+    } catch (err) { toast(err.message); }
+  });
+
+  $('cam-retake').addEventListener('click', camLiveMode);
+
+  $('cam-save').addEventListener('click', async () => {
+    if (!cam.shot) return;
+    const btn = $('cam-save');
+    btn.disabled = true;
+    try {
+      await api('/api/gallery', 'POST', { data: cam.shot });
+      await loadGallery();
+      toast('Photo enregistrée dans ta galerie.');
+      camLiveMode();
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  });
+
+  function renderGallery() {
+    $('gal-count').textContent = cam.gallery.length ? plural(cam.gallery.length, 'photo', 'photos') : 'Ta galerie est vide. Prends une photo avec l\'appareil photo !';
+    const grid = $('gal-grid');
+    grid.innerHTML = '';
+    cam.gallery.forEach((g) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      const img = document.createElement('img');
+      img.src = g.url;
+      img.alt = '';
+      img.loading = 'lazy';
+      b.appendChild(img);
+      b.addEventListener('click', () => viewImage(g.url, async () => {
+        if (!confirm('Supprimer cette photo de ta galerie ?')) return;
+        try {
+          await api('/api/gallery/' + g.id, 'DELETE');
+          closeModal('modal-viewer');
+          await loadGallery();
+          renderGallery();
+        } catch (err) { toast(err.message); }
+      }));
+      grid.appendChild(b);
+    });
+  }
+
+  $('cam-gallery').addEventListener('click', async () => {
+    try { await loadGallery(); } catch (err) { return toast(err.message); }
+    renderGallery();
+    openModal('modal-gallery');
+  });
+
+
   /* ---------------- Onglets : Discussions / Stories / Appels ---------------- */
 
   state.tab = 'chats';
@@ -1503,6 +1831,7 @@
   function afterStart() {
     const admin = !!state.me.isAdmin;
     $('tabbar').classList.toggle('hidden', admin);
+    $('btn-camera').classList.toggle('hidden', admin);
     showTab('chats');
     if (state.me.staff) refreshReportsBadge();
     if (!admin) loadStories().catch(() => {});
