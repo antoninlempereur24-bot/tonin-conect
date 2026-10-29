@@ -1485,11 +1485,14 @@
 
   const deep = { id: null, tab: 'messages', data: null, conv: null };
 
-  function viewImage(url, onDelete) {
+  function viewImage(url, onDelete, onSend) {
     $('viewer-img').src = url;
     const del = $('viewer-del');
     del.classList.toggle('hidden', !onDelete);
     del.onclick = onDelete || null;
+    const snd = $('viewer-send');
+    snd.classList.toggle('hidden', !onSend);
+    snd.onclick = onSend || null;
     openModal('modal-viewer');
   }
 
@@ -1765,11 +1768,12 @@
     } catch (err) { toast(err.message); }
   });
 
-  $('cam-retake').addEventListener('click', camLiveMode);
 
-  // Envoyer la photo prise à des amis
-  $('cam-send').addEventListener('click', () => {
-    if (!cam.shot) return;
+  // Envoyer une photo (celle qu'on vient de prendre, ou une de la galerie) à des amis
+  let sendSrc = null; // { dataUrl } ou { url }
+
+  function openSendPicker(src) {
+    sendSrc = src;
     const box = $('cam-send-list');
     box.innerHTML = '';
     $('cam-send-error').textContent = '';
@@ -1786,22 +1790,40 @@
       box.appendChild(lab);
     });
     openModal('modal-cam-send');
-  });
+  }
+
+  const camSendShot = () => { if (cam.shot) openSendPicker({ dataUrl: cam.shot }); };
+  $('cam-send').addEventListener('click', camSendShot);
+  $('cam-review-send').addEventListener('click', camSendShot);
+
+  async function urlToDataUrl(url) {
+    const blob = await (await fetch(url)).blob();
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(new Error('Lecture de la photo impossible.'));
+      r.onload = () => resolve(r.result);
+      r.readAsDataURL(blob);
+    });
+  }
 
   $('cam-send-go').addEventListener('click', async () => {
     const ids = [...$('cam-send-list').querySelectorAll('input:checked')].map((i) => i.value);
     if (!ids.length) { $('cam-send-error').textContent = 'Choisis au moins un contact.'; return; }
+    if (!sendSrc) return;
     const btn = $('cam-send-go');
     btn.disabled = true;
     try {
-      const { url } = await api('/api/upload', 'POST', { data: cam.shot });
+      // on envoie toujours une copie : supprimer le message ne supprime pas la photo de la galerie (et inversement)
+      const data = sendSrc.dataUrl || (await urlToDataUrl(sendSrc.url));
+      const { url } = await api('/api/upload', 'POST', { data });
       let fails = 0;
       await Promise.all(ids.map((to) => new Promise((resolve) => {
         state.socket.emit('message:send', { to, text: '', image: url }, (r) => { if (r && r.error) fails++; resolve(); });
       })));
       closeModal('modal-cam-send');
+      if (sendSrc.dataUrl) camLiveMode(); else closeModal('modal-viewer');
+      sendSrc = null;
       toast(fails ? 'Envoyée, mais ' + plural(fails, 'envoi a échoué', 'envois ont échoué') + '.' : 'Photo envoyée à ' + plural(ids.length, 'contact', 'contacts') + ' !');
-      camLiveMode();
     } catch (err) { $('cam-send-error').textContent = err.message; }
     finally { btn.disabled = false; }
   });
@@ -1839,16 +1861,18 @@
           await loadGallery();
           renderGallery();
         } catch (err) { toast(err.message); }
-      }));
+      }, () => openSendPicker({ url: g.url })));
       grid.appendChild(b);
     });
   }
 
-  $('cam-gallery').addEventListener('click', async () => {
+  async function openGallery() {
     try { await loadGallery(); } catch (err) { return toast(err.message); }
     renderGallery();
     openModal('modal-gallery');
-  });
+  }
+  $('cam-gallery').addEventListener('click', openGallery);
+  $('cam-gallery-top').addEventListener('click', openGallery);
 
 
   /* ---------------- Onglets : Discussions / Stories / Appels ---------------- */

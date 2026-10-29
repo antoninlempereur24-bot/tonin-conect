@@ -662,6 +662,7 @@
         <button class="icon-btn" data-close title="Fermer">✕</button>
         <button id="cam-send" class="btn small primary hidden" type="button">📤 Envoyer</button>
         <h2 id="cam-title">📷 Appareil photo</h2>
+        <button id="cam-gallery-top" class="icon-btn" type="button" title="Ma galerie" style="margin-left:auto">🖼</button>
       </header>
       <div class="cam-view">
         <video id="cam-video" playsinline autoplay muted></video>
@@ -674,21 +675,10 @@
         <button id="cam-flip" class="icon-btn cam-flip" type="button" title="Changer de caméra">🔄</button>
       </div>
       <div id="cam-review" class="cam-review hidden">
-        <button id="cam-retake" class="btn" type="button">↺ Reprendre</button>
-        <button id="cam-save" class="btn primary" type="button">💾 Enregistrer</button>
+        <button id="cam-review-send" class="btn primary" type="button">📤 Envoyer</button>
+        <button id="cam-save" class="btn" type="button">💾 Enregistrer</button>
       </div>
       <input id="cam-file" type="file" accept="image/*" capture="environment" hidden />
-    </div>
-  </div>
-
-  <!-- ====================== MODALE : ENVOYER LA PHOTO À DES AMIS ====================== -->
-  <div id="modal-cam-send" class="modal hidden">
-    <div class="modal-box small-box">
-      <button class="modal-close" data-close>✕</button>
-      <h2>📤 Envoyer à…</h2>
-      <div id="cam-send-list" class="cam-send-list"></div>
-      <p id="cam-send-error" class="error"></p>
-      <button id="cam-send-go" class="btn primary" type="button">Envoyer</button>
     </div>
   </div>
 
@@ -728,7 +718,21 @@
   <div id="modal-viewer" class="modal lightbox hidden">
     <button class="modal-close" data-close>✕</button>
     <img id="viewer-img" alt="" />
-    <button id="viewer-del" class="btn danger hidden" type="button">🗑 Supprimer</button>
+    <div class="viewer-actions">
+      <button id="viewer-send" class="btn primary hidden" type="button">📤 Envoyer</button>
+      <button id="viewer-del" class="btn danger hidden" type="button">🗑 Supprimer</button>
+    </div>
+  </div>
+
+  <!-- ====================== MODALE : ENVOYER LA PHOTO À DES AMIS ====================== -->
+  <div id="modal-cam-send" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📤 Envoyer à…</h2>
+      <div id="cam-send-list" class="cam-send-list"></div>
+      <p id="cam-send-error" class="error"></p>
+      <button id="cam-send-go" class="btn primary" type="button">Envoyer</button>
+    </div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>

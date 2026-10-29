@@ -766,3 +766,14 @@ button.acc-line:hover { background: var(--panel-2); }
 .bc-item .btn { width: auto; margin: 0; }
 .chan-post audio { width: 100%; margin-bottom: 6px; }
 .chan-post .chan-del { font-size: 13px; width: auto; padding: 2px 8px; color: var(--danger); }
+
+/* ---------- Correctifs portrait (téléphone) ---------- */
+.acc-main.gal-main { display: block; }
+.cam-screen { height: 100dvh; }
+.cam-view video, .cam-view img { position: absolute; inset: 0; }
+.cam-bar, .cam-review { position: relative; z-index: 2; }
+.cam-thumb { width: 54px; height: 54px; }
+.viewer-actions { display: flex; gap: 10px; margin-top: 14px; }
+.viewer-actions .btn { width: auto; margin: 0; background: rgba(0,0,0,.5); }
+.viewer-actions .btn.primary { background: var(--mine); }
+#viewer-del { margin-top: 0; }
