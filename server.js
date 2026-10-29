@@ -1607,6 +1607,29 @@ app.delete('/api/admin/users/:id', auth, supremeOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Modifier le code de partage (code d'ami) d'un compte : administrateur suprême ET administrateurs nommés
+app.post('/api/admin/users/:id/share-code', auth, adminOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (u.admin && !req.isAdmin && u.id !== req.userId) {
+    return res.status(403).json({ error: 'Seul l\'administrateur suprême peut agir sur un administrateur.' });
+  }
+  const b = req.body || {};
+  let code;
+  if (b.random || b.code === undefined || String(b.code).trim() === '') {
+    try { code = newShareCode(); } catch (e) { return res.status(500).json({ error: e.message }); }
+  } else {
+    code = String(b.code).trim();
+    if (!PIN_RE.test(code)) return res.status(400).json({ error: 'Le code de partage doit contenir exactement 4 chiffres.' });
+    if (db.users.some((x) => x.id !== u.id && x.shareCode === code)) return res.status(409).json({ error: 'Ce code est déjà utilisé par un autre compte.' });
+  }
+  u.shareCode = code; // l'ancien code est invalidé
+  saveDb();
+  io.to(u.id).emit('contacts:update');
+  io.to('staff').emit('contacts:update');
+  res.json({ ok: true, shareCode: code });
+});
+
 app.get('/api/admin/reports', auth, adminOnly, (req, res) => {
   const list = db.reports
     .slice()

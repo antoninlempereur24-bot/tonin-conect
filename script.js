@@ -1084,9 +1084,27 @@
       pin.textContent = u.pin;
       cell(pin);
 
+      const shareWrap = document.createElement('div');
+      shareWrap.style.cssText = 'display:flex;align-items:center;gap:6px';
       const share = document.createElement('code');
       share.textContent = u.shareCode;
-      cell(share);
+      const editShare = document.createElement('button');
+      editShare.className = 'btn small';
+      editShare.style.cssText = 'width:auto;margin:0;padding:2px 8px';
+      editShare.title = 'Modifier le code de partage';
+      editShare.textContent = '✏️';
+      editShare.addEventListener('click', async () => {
+        const v = prompt('Nouveau code de partage (4 chiffres) pour « ' + u.pseudo + ' ».\nLaisse vide pour en générer un au hasard :', u.shareCode);
+        if (v === null) return;
+        try {
+          const r = await api('/api/admin/users/' + u.id + '/share-code', 'POST', { code: v.trim() });
+          toast('Code de partage de ' + u.pseudo + ' : ' + r.shareCode);
+          loadAdminUsers();
+        } catch (err) { toast(err.message); }
+      });
+      shareWrap.appendChild(share);
+      if (state.me.isAdmin || !u.admin || u.id === state.me.id) shareWrap.appendChild(editShare);
+      cell(shareWrap);
 
       cell(String(u.contacts));
       cell(String(u.reports || 0));
