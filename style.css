@@ -644,3 +644,13 @@ select { margin-top: 6px; }
 }
 .pin-btn:hover { opacity: 0.7; }
 .pin-btn.on { opacity: 1; filter: none; }
+
+
+/* ---- Compte public / groupes modifiables ---- */
+.privacy-check { padding: 8px 4px; cursor: pointer; font-weight: 600; }
+.privacy-check input { width: 20px; height: 20px; }
+#public-search { width: 100%; margin-bottom: 10px; }
+#group-edit { margin-bottom: 8px; }
+#group-add-box { margin-top: 4px; }
+.group-pick .contact .btn { margin-left: auto; }
+.group-pick .contact .btn.danger { padding: 4px 10px; }

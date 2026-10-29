@@ -763,6 +763,69 @@
   });
   $('menu-add-group').addEventListener('click', () => { closeModal('modal-addmenu'); openGroupNew(); });
 
+  /* ---------------- Comptes publics ---------------- */
+
+  state.publicUsers = [];
+
+  function renderPublicList() {
+    const box = $('public-list');
+    const q = $('public-search').value.trim().toLowerCase();
+    box.innerHTML = '';
+    const list = state.publicUsers.filter((u) => !q || u.name.toLowerCase().includes(q) || u.pseudo.toLowerCase().includes(q));
+    if (!list.length) {
+      box.appendChild(emptyDiv(state.publicUsers.length ? 'Aucun résultat.' : 'Aucun compte public à ajouter pour le moment.'));
+      return;
+    }
+    list.forEach((u) => {
+      const row = document.createElement('div');
+      row.className = 'contact';
+      row.appendChild(avatarWithDot(u));
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = u.name + (u.name !== u.pseudo ? ' (' + u.pseudo + ')' : '');
+      row.appendChild(meta);
+      const btn = document.createElement('button');
+      btn.className = 'btn small primary';
+      btn.type = 'button';
+      btn.textContent = 'Ajouter';
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        $('public-error').textContent = '';
+        try {
+          const c = await api('/api/contacts/public', 'POST', { id: u.id });
+          closeModal('modal-public');
+          toast(c.pseudo + ' a été ajouté à tes contacts !');
+          await loadContacts();
+          openChat(c.id);
+        } catch (err) {
+          btn.disabled = false;
+          $('public-error').textContent = err.message;
+          loadPublicUsers();
+        }
+      });
+      row.appendChild(btn);
+      box.appendChild(row);
+    });
+  }
+
+  async function loadPublicUsers() {
+    try {
+      state.publicUsers = await api('/api/public-users');
+      renderPublicList();
+    } catch (err) { $('public-error').textContent = err.message; }
+  }
+
+  $('menu-add-public').addEventListener('click', () => {
+    closeModal('modal-addmenu');
+    $('public-search').value = '';
+    $('public-error').textContent = '';
+    $('public-list').innerHTML = '';
+    $('public-list').appendChild(emptyDiv('Chargement…'));
+    openModal('modal-public');
+    loadPublicUsers();
+  });
+  $('public-search').addEventListener('input', renderPublicList);
+
   $('add-code').addEventListener('input', (e) => {
     e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
   });
@@ -824,7 +887,9 @@
     $('field-nickname').classList.toggle('hidden', isAdmin);
     $('share-section').classList.toggle('hidden', isAdmin);
     $('field-desc').classList.toggle('hidden', !isAdmin);
+    $('privacy-section').classList.toggle('hidden', isAdmin);
     if (isAdmin) $('settings-desc').value = me.description || '';
+    else $('settings-public').checked = !!me.isPublic;
 
     const code = $('settings-code');
     code.type = 'password';
@@ -941,6 +1006,7 @@
       }
       body.pin = code;
       body.nickname = $('settings-nickname').value;
+      body.isPublic = $('settings-public').checked;
     }
 
     const saveBtn = $('settings-save');
@@ -1368,8 +1434,114 @@
       box.appendChild(row);
     });
     $('group-delete').classList.toggle('hidden', c.ownerId !== state.me.id);
+    $('group-error').textContent = '';
+    renderGroupOwnerTools(c);
     openModal('modal-group');
   }
+
+  /* Outils du créateur : nom, photo, membres */
+  state.groupAvatar = '';
+
+  function renderGroupEditPreview() {
+    const c = state.contacts.find((x) => x.id === state.groupView);
+    const holder = $('group-edit-preview');
+    holder.innerHTML = '';
+    holder.appendChild(makeAvatar({ isGroup: true, name: $('group-edit-name').value || (c ? c.name : '?'), avatar: state.groupAvatar }, true));
+  }
+
+  function renderGroupOwnerTools(c) {
+    const owner = c.ownerId === state.me.id;
+    $('group-edit').classList.toggle('hidden', !owner);
+    $('group-add-box').classList.toggle('hidden', !owner);
+    if (!owner) return;
+    state.groupAvatar = c.avatar || '';
+    $('group-edit-name').value = c.name;
+    renderGroupEditPreview();
+
+    // retirer des membres
+    const rows = $('group-members').children;
+    [...rows].forEach((row, i) => {
+      const m = c.members[i];
+      if (!m || m.id === state.me.id) return;
+      const b = document.createElement('button');
+      b.className = 'btn small danger';
+      b.type = 'button';
+      b.title = 'Retirer du groupe';
+      b.textContent = '✕';
+      b.addEventListener('click', async () => {
+        if (!confirm('Retirer « ' + m.name + ' » du groupe ?')) return;
+        try {
+          await api('/api/groups/' + c.id + '/members/' + m.id, 'DELETE');
+          await loadContacts();
+          const fresh = state.contacts.find((x) => x.id === c.id);
+          if (fresh) openGroupProfile(fresh); else closeModal('modal-group');
+          toast('Membre retiré.');
+        } catch (err) { $('group-error').textContent = err.message; }
+      });
+      row.appendChild(b);
+    });
+
+    // ajouter des membres
+    const box = $('group-add-list');
+    box.innerHTML = '';
+    const inGroup = new Set(c.members.map((m) => m.id));
+    const people = state.contacts.filter((x) => !x.isAdmin && !x.isSystem && !x.isGroup && !inGroup.has(x.id));
+    if (!people.length) box.appendChild(emptyDiv('Tous tes contacts sont déjà dans le groupe.'));
+    people.forEach((p) => {
+      const row = document.createElement('label');
+      row.className = 'check';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = p.id;
+      row.appendChild(cb);
+      row.appendChild(makeAvatar(p));
+      const nm = document.createElement('span');
+      nm.textContent = p.name;
+      row.appendChild(nm);
+      box.appendChild(row);
+    });
+    $('group-add-btn').classList.toggle('hidden', !people.length);
+  }
+
+  $('group-edit-name').addEventListener('input', renderGroupEditPreview);
+  $('group-edit-clear').addEventListener('click', () => { state.groupAvatar = ''; renderGroupEditPreview(); });
+  $('group-edit-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const img = await readImage(file);
+      const { url } = await api('/api/upload', 'POST', { data: renderToDataUrl(img, { max: 256, square: true, quality: 0.85 }) });
+      state.groupAvatar = url;
+      renderGroupEditPreview();
+    } catch (err) { $('group-error').textContent = err.message; }
+  });
+
+  $('group-edit-save').addEventListener('click', async () => {
+    $('group-error').textContent = '';
+    const id = state.groupView;
+    try {
+      await api('/api/groups/' + id, 'PUT', { name: $('group-edit-name').value, avatar: state.groupAvatar });
+      await loadContacts();
+      const fresh = state.contacts.find((x) => x.id === id);
+      if (fresh) openGroupProfile(fresh);
+      toast('Groupe modifié !');
+    } catch (err) { $('group-error').textContent = err.message; }
+  });
+
+  $('group-add-btn').addEventListener('click', async () => {
+    $('group-error').textContent = '';
+    const id = state.groupView;
+    const members = [...$('group-add-list').querySelectorAll('input:checked')].map((x) => x.value);
+    if (!members.length) { $('group-error').textContent = 'Coche au moins un contact.'; return; }
+    try {
+      await api('/api/groups/' + id + '/members', 'POST', { members });
+      await loadContacts();
+      const fresh = state.contacts.find((x) => x.id === id);
+      if (fresh) openGroupProfile(fresh);
+      toast('Membres ajoutés !');
+    } catch (err) { $('group-error').textContent = err.message; }
+  });
 
   async function leaveOrDeleteGroup(del) {
     const id = state.groupView;

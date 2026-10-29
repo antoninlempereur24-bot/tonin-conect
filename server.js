@@ -438,6 +438,7 @@ function meFull(userId) {
     shareCode: u.shareCode,
     isAdmin: false,
     staff: !!u.admin,
+    isPublic: !!u.isPublic,
     appearance: u.appearance || DEFAULT_APPEARANCE,
   };
 }
@@ -473,7 +474,7 @@ function contactListFor(userId) {
   const gids = new Set(groupsFor.map((g) => g.id));
   groupsFor.forEach((g) => {
     list.push({
-      id: g.id, pseudo: g.name, nickname: '', name: g.name, avatar: '', isAdmin: false, isGroup: true, online: false, ownerId: g.ownerId,
+      id: g.id, pseudo: g.name, nickname: '', name: g.name, avatar: g.avatar || '', isAdmin: false, isGroup: true, online: false, ownerId: g.ownerId,
       members: g.members.map((mid) => ({ id: mid, name: displayName(userId, mid), avatar: avatarOf(mid) })),
     });
   });
@@ -725,7 +726,7 @@ app.put('/api/me', auth, (req, res) => {
 });
 
 function updateMe(req, res) {
-  const { nickname, avatar: rawAvatar, pin, appearance, description } = req.body || {};
+  const { nickname, avatar: rawAvatar, pin, appearance, description, isPublic } = req.body || {};
   const avatar = normalizeAvatar(rawAvatar);
   const user = req.isAdmin ? null : getUser(req.userId);
   let newNick;
@@ -774,6 +775,9 @@ function updateMe(req, res) {
   if (newNick !== undefined && newNick !== (user.nickname || '')) {
     user.nickname = newNick;
     visible = true;
+  }
+  if (!req.isAdmin && isPublic !== undefined && !!isPublic !== !!user.isPublic) {
+    user.isPublic = !!isPublic;
   }
   if (newPin) {
     if (req.isAdmin) {
@@ -837,6 +841,44 @@ app.post('/api/contacts', auth, (req, res) => {
   target.addedAt = target.addedAt || {};
   me.addedAt[target.id] = now;
   target.addedAt[me.id] = now;
+  saveDb();
+  io.to(me.id).to(target.id).emit('contacts:update');
+  res.json(publicUser(target));
+});
+
+/* --------- Comptes publics --------- */
+
+function linkContacts(me, target) {
+  me.contacts.push(target.id);
+  if (!target.contacts.includes(me.id)) target.contacts.push(me.id);
+  const now = Date.now();
+  me.addedAt = me.addedAt || {};
+  target.addedAt = target.addedAt || {};
+  me.addedAt[target.id] = now;
+  target.addedAt[me.id] = now;
+}
+
+// Liste des comptes publics (les comptes privés n'y apparaissent jamais).
+// Tout le monde peut la consulter, y compris un compte privé.
+app.get('/api/public-users', auth, (req, res) => {
+  if (req.isAdmin) return res.json([]);
+  const me = getUser(req.userId);
+  res.json(
+    db.users
+      .filter((u) => u.isPublic && u.id !== me.id && !me.contacts.includes(u.id) && !banInfo(u))
+      .sort((a, b) => (a.nickname || a.pseudo).localeCompare(b.nickname || b.pseudo, 'fr'))
+      .map((u) => ({ id: u.id, pseudo: u.pseudo, name: u.nickname || u.pseudo, avatar: u.avatar || '', online: isOnline(u.id) }))
+  );
+});
+
+app.post('/api/contacts/public', auth, (req, res) => {
+  if (req.isAdmin) return res.status(400).json({ error: 'L\'administrateur voit déjà tout le monde.' });
+  const me = getUser(req.userId);
+  const target = getUser(String((req.body && req.body.id) || ''));
+  if (!target || !target.isPublic) return res.status(404).json({ error: 'Ce compte n\'est pas public.' });
+  if (target.id === me.id) return res.status(400).json({ error: 'Tu ne peux pas t\'ajouter toi-même.' });
+  if (me.contacts.includes(target.id)) return res.status(400).json({ error: 'Cet utilisateur est déjà dans tes contacts.' });
+  linkContacts(me, target);
   saveDb();
   io.to(me.id).to(target.id).emit('contacts:update');
   res.json(publicUser(target));
@@ -1377,6 +1419,7 @@ async function dropGroup(g) {
     await storage.removeMessagesFor(g.id);
     for (const m of gm) for (const f of [m.image, m.audio]) if (f) await storage.delFile(f.split('/').pop());
   } catch (e) { console.error('Nettoyage groupe :', e.message); }
+  if (g.avatar && g.avatar.startsWith('/uploads/')) storage.delFile(g.avatar.split('/').pop()).catch(() => {});
   g.members.forEach((m) => io.to(m).emit('contacts:update'));
 }
 
@@ -1391,11 +1434,69 @@ app.post('/api/groups', auth, (req, res) => {
   if (ids.length + 1 > GROUP_MAX) return res.status(400).json({ error: 'Un groupe peut avoir ' + GROUP_MAX + ' membres maximum.' });
   if (ids.some((x) => !getUser(x) || !me.contacts.includes(x))) return res.status(400).json({ error: 'Tu ne peux ajouter que tes contacts.' });
   if (db.groups.filter((g) => g.ownerId === me.id).length >= 10) return res.status(400).json({ error: 'Tu peux créer 10 groupes maximum.' });
-  const g = { id: 'g_' + uid(), name, ownerId: me.id, members: [me.id, ...ids], createdAt: Date.now() };
+  const g = { id: 'g_' + uid(), name, avatar: '', ownerId: me.id, members: [me.id, ...ids], createdAt: Date.now() };
   db.groups.push(g);
   saveDb();
   g.members.forEach((m) => io.to(m).emit('contacts:update'));
   res.json({ id: g.id, name: g.name });
+});
+
+function ownedGroup(req, res) {
+  const g = getGroup(req.params.id);
+  if (!g || req.isAdmin || !g.members.includes(req.userId)) { res.status(404).json({ error: 'Groupe introuvable.' }); return null; }
+  if (g.ownerId !== req.userId) { res.status(403).json({ error: 'Seul le créateur du groupe peut faire ça.' }); return null; }
+  return g;
+}
+
+app.put('/api/groups/:id', auth, (req, res) => {
+  const g = ownedGroup(req, res);
+  if (!g) return;
+  const body = req.body || {};
+  if (body.name !== undefined) {
+    const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+    if (name.length < 2 || name.length > 30) return res.status(400).json({ error: 'Le nom du groupe doit faire entre 2 et 30 caractères.' });
+    g.name = name;
+  }
+  if (body.avatar !== undefined) {
+    const av = String(body.avatar || '');
+    if (av && !IMG_RE.test(av)) return res.status(400).json({ error: 'Photo de groupe invalide.' });
+    if (g.avatar && g.avatar !== av && g.avatar.startsWith('/uploads/')) storage.delFile(g.avatar.split('/').pop()).catch(() => {});
+    g.avatar = av;
+  }
+  saveDb();
+  g.members.forEach((m) => io.to(m).emit('contacts:update'));
+  res.json({ ok: true, name: g.name, avatar: g.avatar || '' });
+});
+
+app.post('/api/groups/:id/members', auth, (req, res) => {
+  const g = ownedGroup(req, res);
+  if (!g) return;
+  const me = getUser(req.userId);
+  const raw = Array.isArray(req.body && req.body.members) ? req.body.members.map(String) : [];
+  const ids = [...new Set(raw)].filter((x) => !g.members.includes(x));
+  if (!ids.length) return res.status(400).json({ error: 'Choisis au moins un contact à ajouter.' });
+  if (g.members.length + ids.length > GROUP_MAX) return res.status(400).json({ error: 'Un groupe peut avoir ' + GROUP_MAX + ' membres maximum.' });
+  if (ids.some((x) => !getUser(x) || !me.contacts.includes(x))) return res.status(400).json({ error: 'Tu ne peux ajouter que tes contacts.' });
+  g.members.push(...ids);
+  saveDb();
+  g.members.forEach((m) => io.to(m).emit('contacts:update'));
+  res.json({ ok: true });
+});
+
+app.delete('/api/groups/:id/members/:uid', auth, (req, res) => {
+  const g = ownedGroup(req, res);
+  if (!g) return;
+  const target = req.params.uid;
+  if (target === req.userId) return res.status(400).json({ error: 'Pour partir, utilise « Quitter le groupe ».' });
+  if (!g.members.includes(target)) return res.status(404).json({ error: 'Ce membre n\'est pas dans le groupe.' });
+  const cid = inCall.get(target);
+  const cc = cid && calls.get(cid);
+  if (cc && cc.groupId === g.id) leaveCall(target, 'hangup');
+  const before = [...g.members];
+  g.members = g.members.filter((x) => x !== target);
+  saveDb();
+  before.forEach((m) => io.to(m).emit('contacts:update'));
+  res.json({ ok: true });
 });
 
 app.post('/api/groups/:id/leave', auth, async (req, res) => {
