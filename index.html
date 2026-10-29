@@ -64,7 +64,6 @@
           <small id="me-sub"></small>
         </div>
         <div class="side-actions">
-          <button id="btn-camera" class="icon-btn hidden" title="Appareil photo">📷</button>
           <button id="btn-admin" class="icon-btn hidden" title="Administration">🛠️<span id="reports-badge" class="badge hidden">0</span></button>
           <button id="btn-settings" class="icon-btn" title="Réglages">⚙️</button>
           <button id="btn-logout" class="icon-btn" title="Déconnexion">⏻</button>
@@ -98,6 +97,7 @@
       <nav id="tabbar">
         <button data-tab="chats" class="active"><span class="ico">💬</span>Discussions</button>
         <button data-tab="stories"><span class="ico">📸</span>Stories<i id="stories-dot" class="tab-count hidden"></i></button>
+        <button id="btn-camera" type="button"><span class="ico">📷</span>Caméra</button>
         <button data-tab="channels"><span class="ico">📢</span>Chaînes</button>
         <button data-tab="calls"><span class="ico">📞</span>Appels</button>
       </nav>
@@ -489,6 +489,9 @@
         <input id="chan-photo" type="file" accept="image/*" hidden />
         <button id="chan-video-btn" class="icon-btn" type="button" title="Vidéo">🎬</button>
         <input id="chan-video" type="file" accept="video/mp4,video/webm,video/quicktime" hidden />
+        <button id="chan-mic-btn" class="icon-btn" type="button" title="Message vocal">🎤</button>
+        <span id="chan-rec-timer" class="rec-timer hidden"></span>
+        <button id="chan-mic-cancel" class="icon-btn hidden" type="button" title="Annuler le vocal">🗑</button>
         <input id="chan-text" type="text" maxlength="2000" placeholder="Écrire dans la chaîne…" />
         <button class="btn primary" type="submit">Publier</button>
       </form>
@@ -611,6 +614,24 @@
     </div>
   </div>
 
+  <div id="modal-bc-menu" class="modal hidden">
+    <div class="modal-box small-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>🔔 Notification système</h2>
+      <button class="btn hub-item" id="bc-old" type="button"><span>📜 Voir les anciennes notifications</span></button>
+      <button class="btn hub-item" id="bc-new" type="button"><span>✉️ Envoyer une notification</span></button>
+    </div>
+  </div>
+
+  <div id="modal-bc-list" class="modal hidden">
+    <div class="modal-box wide-box">
+      <button class="modal-close" data-close>✕</button>
+      <h2>📜 Anciennes notifications</h2>
+      <p class="hint">Modifier ou supprimer une notification la change chez tous les comptes qui l'ont reçue.</p>
+      <div id="bc-list" class="bc-list"></div>
+    </div>
+  </div>
+
   <div id="modal-broadcast" class="modal hidden">
     <div class="modal-box small-box">
       <button class="modal-close" data-close>✕</button>
@@ -639,7 +660,8 @@
     <div class="cam-screen">
       <header class="acc-top">
         <button class="icon-btn" data-close title="Fermer">✕</button>
-        <h2>📷 Appareil photo</h2>
+        <button id="cam-send" class="btn small primary hidden" type="button">📤 Envoyer</button>
+        <h2 id="cam-title">📷 Appareil photo</h2>
       </header>
       <div class="cam-view">
         <video id="cam-video" playsinline autoplay muted></video>
@@ -659,13 +681,28 @@
     </div>
   </div>
 
-  <!-- ====================== MODALE : GALERIE ====================== -->
-  <div id="modal-gallery" class="modal hidden">
-    <div class="modal-box wide-box">
+  <!-- ====================== MODALE : ENVOYER LA PHOTO À DES AMIS ====================== -->
+  <div id="modal-cam-send" class="modal hidden">
+    <div class="modal-box small-box">
       <button class="modal-close" data-close>✕</button>
-      <h2>🖼 Ma galerie</h2>
-      <p id="gal-count" class="hint"></p>
-      <div id="gal-grid" class="gal-grid"></div>
+      <h2>📤 Envoyer à…</h2>
+      <div id="cam-send-list" class="cam-send-list"></div>
+      <p id="cam-send-error" class="error"></p>
+      <button id="cam-send-go" class="btn primary" type="button">Envoyer</button>
+    </div>
+  </div>
+
+  <!-- ====================== FENÊTRE PLEIN ÉCRAN : GALERIE ====================== -->
+  <div id="modal-gallery" class="modal fullscreen hidden">
+    <div class="acc-screen">
+      <header class="acc-top">
+        <button class="icon-btn" data-close title="Fermer">✕</button>
+        <h2>🖼 Ma galerie</h2>
+      </header>
+      <div class="acc-main gal-main">
+        <p id="gal-count" class="hint"></p>
+        <div id="gal-grid" class="gal-grid"></div>
+      </div>
     </div>
   </div>
 

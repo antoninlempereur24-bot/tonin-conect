@@ -747,3 +747,22 @@ button.acc-line:hover { background: var(--panel-2); }
 .deep-msg img { display: block; max-width: 100%; max-height: 240px; border-radius: 10px; margin-bottom: 4px; cursor: pointer; }
 .deep-msg audio { max-width: 100%; }
 .acc-main.deep-main { display: block; }
+
+/* ---------- Barre du bas à 5 onglets, envoi de photo, notifications, vocaux de chaîne ---------- */
+#tabbar button { min-width: 0; font-size: 11px; }
+#btn-camera .ico { font-size: 24px; }
+.cam-send-list { display: flex; flex-direction: column; gap: 4px; max-height: 50dvh; overflow-y: auto; margin-bottom: 8px; }
+.cam-send-list label { display: flex; align-items: center; gap: 10px; margin: 0; padding: 8px; border-radius: 10px; color: var(--text); font-size: 14px; cursor: pointer; }
+.cam-send-list label:hover { background: var(--panel-2); }
+.cam-send-list input { width: auto; }
+.cam-send-list .avatar { width: 34px; height: 34px; font-size: 15px; }
+.gal-main { flex: 1; min-height: 0; }
+.gal-main .gal-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.bc-list { display: flex; flex-direction: column; gap: 10px; max-height: 60dvh; overflow-y: auto; }
+.bc-item { padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+.bc-item p { margin: 0 0 6px; overflow-wrap: anywhere; font-size: 14px; }
+.bc-item small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.bc-item .row { display: flex; gap: 8px; }
+.bc-item .btn { width: auto; margin: 0; }
+.chan-post audio { width: 100%; margin-bottom: 6px; }
+.chan-post .chan-del { font-size: 13px; width: auto; padding: 2px 8px; color: var(--danger); }

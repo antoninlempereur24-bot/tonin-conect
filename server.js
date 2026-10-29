@@ -1095,7 +1095,7 @@ const VIDEO_EXT = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime':
 
 function chanFiles(c) {
   const list = [c.avatar];
-  c.posts.forEach((p) => list.push(p.image, p.video));
+  c.posts.forEach((p) => list.push(p.image, p.video, p.audio));
   return list.filter((x) => x && x.startsWith('/uploads/')).map((x) => x.split('/').pop());
 }
 
@@ -1191,12 +1191,15 @@ app.post('/api/channels/:id/posts', auth, (req, res) => {
   const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
   const image = String((req.body && req.body.image) || '');
   const video = String((req.body && req.body.video) || '');
+  const audio = String((req.body && req.body.audio) || '');
+  if (audio && !AUD_RE.test(audio)) return res.status(400).json({ error: 'Vocal invalide.' });
   if (image && !IMG_RE.test(image)) return res.status(400).json({ error: 'Image invalide.' });
   if (video && !VID_RE.test(video)) return res.status(400).json({ error: 'Vidéo invalide.' });
-  if (!text && !image && !video) return res.status(400).json({ error: 'Publication vide.' });
+  if (!text && !image && !video && !audio) return res.status(400).json({ error: 'Publication vide.' });
   const post = { id: uid(), text, ts: Date.now() };
   if (image) post.image = image;
   if (video) post.video = video;
+  if (audio) post.audio = audio;
   c.posts.push(post);
   saveDb();
   io.emit('channels:update');
@@ -1209,7 +1212,7 @@ app.delete('/api/channels/:id/posts/:pid', auth, async (req, res) => {
   if (i === -1) return res.status(404).json({ error: 'Publication introuvable.' });
   const [p] = c.posts.splice(i, 1);
   saveDb();
-  for (const f of [p.image, p.video]) { if (f) { try { await storage.delFile(f.split('/').pop()); } catch (e) { /* ignore */ } } }
+  for (const f of [p.image, p.video, p.audio]) { if (f) { try { await storage.delFile(f.split('/').pop()); } catch (e) { /* ignore */ } } }
   io.emit('channels:update');
   res.json({ ok: true });
 });
@@ -2067,6 +2070,52 @@ app.post('/api/admin/ban-requests/:id/refuse', auth, supremeOnly, (req, res) => 
 });
 
 // Notification « Système » envoyée à tous les comptes
+// Les notifications système sont des messages « Système » commençant par 🔔 : on regroupe ceux envoyés ensemble (même texte, même instant)
+const BC_PREFIX = '🔔 ';
+
+function broadcastGroups() {
+  const list = db.messages.filter((m) => m.from === 'system' && typeof m.text === 'string' && m.text.startsWith(BC_PREFIX)).sort((a, b) => a.ts - b.ts);
+  const groups = [];
+  for (const m of list) {
+    const g = groups.find((x) => x.text === m.text && m.ts - x.ts < 10000);
+    if (g) g.msgs.push(m);
+    else groups.push({ id: m.id, text: m.text, ts: m.ts, msgs: [m] });
+  }
+  return groups;
+}
+
+app.get('/api/admin/broadcasts', auth, supremeOnly, (req, res) => {
+  res.json(broadcastGroups().reverse().map((g) => ({ id: g.id, text: g.text.slice(BC_PREFIX.length), ts: g.ts, recipients: g.msgs.length, edited: g.msgs.some((m) => m.edited) })));
+});
+
+app.put('/api/admin/broadcasts/:id', auth, supremeOnly, async (req, res) => {
+  const g = broadcastGroups().find((x) => x.id === req.params.id);
+  if (!g) return res.status(404).json({ error: 'Notification introuvable.' });
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 1990);
+  if (!text) return res.status(400).json({ error: 'Le texte ne peut pas être vide.' });
+  for (const m of g.msgs) {
+    m.text = BC_PREFIX + text;
+    m.edited = true;
+    try { await storage.updateMessage(m); } catch (e) { console.error('Modification non enregistrée :', e.message); }
+    emitMsg('message:edited', m);
+  }
+  saveDb();
+  res.json({ ok: true, recipients: g.msgs.length });
+});
+
+app.delete('/api/admin/broadcasts/:id', auth, supremeOnly, async (req, res) => {
+  const g = broadcastGroups().find((x) => x.id === req.params.id);
+  if (!g) return res.status(404).json({ error: 'Notification introuvable.' });
+  const ids = new Set(g.msgs.map((m) => m.id));
+  db.messages = db.messages.filter((m) => !ids.has(m.id));
+  saveDb();
+  for (const m of g.msgs) {
+    try { await storage.deleteMessage(m.id); } catch (e) { console.error('Suppression :', e.message); }
+    emitMsg('message:deleted', m, { id: m.id, from: m.from, to: m.to });
+  }
+  res.json({ ok: true, recipients: g.msgs.length });
+});
+
 app.post('/api/admin/broadcast', auth, supremeOnly, (req, res) => {
   const text = String((req.body && req.body.text) || '').trim().slice(0, 2000);
   if (!text) return res.status(400).json({ error: 'Écris le texte de la notification.' });

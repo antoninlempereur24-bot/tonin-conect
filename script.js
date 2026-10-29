@@ -1698,6 +1698,8 @@
     $('cam-video').classList.remove('hidden');
     $('cam-bar').classList.remove('hidden');
     $('cam-review').classList.add('hidden');
+    $('cam-send').classList.add('hidden');
+    $('cam-title').classList.remove('hidden');
   }
 
   function camReviewMode(dataUrl) {
@@ -1707,6 +1709,8 @@
     $('cam-video').classList.add('hidden');
     $('cam-bar').classList.add('hidden');
     $('cam-review').classList.remove('hidden');
+    $('cam-send').classList.remove('hidden');
+    $('cam-title').classList.add('hidden');
   }
 
   function renderThumb() {
@@ -1762,6 +1766,45 @@
   });
 
   $('cam-retake').addEventListener('click', camLiveMode);
+
+  // Envoyer la photo prise à des amis
+  $('cam-send').addEventListener('click', () => {
+    if (!cam.shot) return;
+    const box = $('cam-send-list');
+    box.innerHTML = '';
+    $('cam-send-error').textContent = '';
+    const people = state.contacts.filter((c) => !c.isAdmin && !c.isSystem);
+    if (!people.length) box.appendChild(accEl('p', 'hint', 'Aucun contact pour le moment.'));
+    people.forEach((c) => {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = c.id;
+      lab.appendChild(cb);
+      lab.appendChild(makeAvatar(c));
+      lab.appendChild(accEl('span', '', (c.isGroup ? '👥 ' : '') + c.name));
+      box.appendChild(lab);
+    });
+    openModal('modal-cam-send');
+  });
+
+  $('cam-send-go').addEventListener('click', async () => {
+    const ids = [...$('cam-send-list').querySelectorAll('input:checked')].map((i) => i.value);
+    if (!ids.length) { $('cam-send-error').textContent = 'Choisis au moins un contact.'; return; }
+    const btn = $('cam-send-go');
+    btn.disabled = true;
+    try {
+      const { url } = await api('/api/upload', 'POST', { data: cam.shot });
+      let fails = 0;
+      await Promise.all(ids.map((to) => new Promise((resolve) => {
+        state.socket.emit('message:send', { to, text: '', image: url }, (r) => { if (r && r.error) fails++; resolve(); });
+      })));
+      closeModal('modal-cam-send');
+      toast(fails ? 'Envoyée, mais ' + plural(fails, 'envoi a échoué', 'envois ont échoué') + '.' : 'Photo envoyée à ' + plural(ids.length, 'contact', 'contacts') + ' !');
+      camLiveMode();
+    } catch (err) { $('cam-send-error').textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
 
   $('cam-save').addEventListener('click', async () => {
     if (!cam.shot) return;
@@ -1831,7 +1874,6 @@
   function afterStart() {
     const admin = !!state.me.isAdmin;
     $('tabbar').classList.toggle('hidden', admin);
-    $('btn-camera').classList.toggle('hidden', admin);
     showTab('chats');
     if (state.me.staff) refreshReportsBadge();
     if (!admin) loadStories().catch(() => {});
@@ -2875,6 +2917,13 @@
         v.playsInline = true;
         card.appendChild(v);
       }
+      if (p.audio) {
+        const au = document.createElement('audio');
+        au.controls = true;
+        au.preload = 'metadata';
+        au.src = p.audio;
+        card.appendChild(au);
+      }
       if (p.text) {
         const t = document.createElement('p');
         t.textContent = p.text;
@@ -2886,8 +2935,8 @@
       meta.appendChild(when);
       if (mine) {
         const del = document.createElement('button');
-        del.className = 'icon-btn';
-        del.textContent = '🗑';
+        del.className = 'icon-btn chan-del';
+        del.textContent = '🗑 Supprimer';
         del.title = 'Supprimer cette publication';
         del.addEventListener('click', async () => {
           if (!confirm('Supprimer cette publication ?')) return;
@@ -2995,6 +3044,81 @@
     } catch (err) { toast(err.message); }
   });
 
+
+  /* Vocaux dans les chaînes : 🎤 pour démarrer, ⬆️ pour publier, 🗑 pour annuler */
+  const chanRec = { mr: null, stream: null, chunks: [], send: false, started: 0, timer: null };
+
+  function chanRecUi(on) {
+    ['chan-photo-btn', 'chan-video-btn', 'chan-text'].forEach((id) => $(id).classList.toggle('hidden', on));
+    $('chan-compose').querySelector('button[type="submit"]').classList.toggle('hidden', on);
+    $('chan-rec-timer').classList.toggle('hidden', !on);
+    $('chan-mic-cancel').classList.toggle('hidden', !on);
+    $('chan-mic-btn').textContent = on ? '⬆️' : '🎤';
+    $('chan-mic-btn').title = on ? 'Publier le vocal' : 'Message vocal';
+  }
+
+  async function startChanRec() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      return toast('Les vocaux ne sont pas disponibles ici (connexion HTTPS requise).');
+    }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { return toast('Autorise le micro pour publier un vocal.'); }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    let mr;
+    try { mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+    catch (e) { stream.getTracks().forEach((t) => t.stop()); return toast('Enregistrement impossible sur cet appareil.'); }
+    Object.assign(chanRec, { mr, stream, chunks: [], send: false, started: Date.now() });
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chanRec.chunks.push(e.data); };
+    const chanId = state.chan;
+    mr.onstop = () => finishChanRec(chanId, mr, stream, chanRec.chunks.slice(), chanRec.send);
+    mr.start();
+    chanRecUi(true);
+    const tick = () => {
+      const s = Math.round((Date.now() - chanRec.started) / 1000);
+      $('chan-rec-timer').textContent = '🔴 ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    };
+    tick();
+    chanRec.timer = setInterval(tick, 500);
+  }
+
+  function stopChanRec(send) {
+    if (!chanRec.mr) return;
+    chanRec.send = send;
+    clearInterval(chanRec.timer);
+    chanRecUi(false);
+    const mr = chanRec.mr;
+    chanRec.mr = null;
+    try { mr.stop(); } catch (e) { chanRec.stream.getTracks().forEach((t) => t.stop()); }
+  }
+
+  async function finishChanRec(chanId, mr, stream, chunks, send) {
+    stream.getTracks().forEach((t) => t.stop());
+    if (!send || !chunks.length) return;
+    const type = (mr.mimeType || 'audio/webm').split(';')[0];
+    try {
+      toast('Publication du vocal…');
+      const res = await fetch('/api/upload-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': type, Authorization: 'Bearer ' + state.token },
+        body: new Blob(chunks, { type }),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (x) { /* pas de JSON */ }
+      if (!res.ok) throw new Error(data.error || 'Envoi du vocal impossible.');
+      if (state.chan !== chanId) return toast('Vocal non publié : tu as changé de chaîne.');
+      await postToChannel({ text: '', audio: data.url });
+    } catch (err) { toast(err.message); }
+  }
+
+  // Fermer la chaîne pendant un enregistrement l'annule (le micro s'éteint)
+  new MutationObserver(() => {
+    if ($('modal-channel').classList.contains('hidden')) stopChanRec(false);
+  }).observe($('modal-channel'), { attributes: true, attributeFilter: ['class'] });
+
+  $('chan-mic-btn').addEventListener('click', () => (chanRec.mr ? stopChanRec(true) : startChanRec()));
+  $('chan-mic-cancel').addEventListener('click', () => stopChanRec(false));
+
   function renderChanPreview() {
     const h = $('chan-edit-preview');
     h.innerHTML = '';
@@ -3050,13 +3174,70 @@
       if (k === 'reports') { openModal('modal-reports'); loadReports(); }
       else if (k === 'accounts') openAccountScreen();
       else if (k === 'users') { openModal('modal-admin'); loadAdminUsers(); }
-      else if (k === 'broadcast') { $('broadcast-text').value = ''; $('broadcast-error').textContent = ''; openModal('modal-broadcast'); }
+      else if (k === 'broadcast') openModal('modal-bc-menu');
       else if (k === 'requests') { openModal('modal-requests'); loadRequests(); }
       else if (k === 'banlog') { openModal('modal-banlog'); loadBanLog(); }
       else if (k === 'stories') { openModal('modal-admin-stories'); loadAdminStories(); }
       else { openModal('modal-admin-channels'); loadAdminChannels(); }
     });
   });
+
+
+  $('bc-new').addEventListener('click', () => {
+    closeModal('modal-bc-menu');
+    $('broadcast-text').value = '';
+    $('broadcast-error').textContent = '';
+    openModal('modal-broadcast');
+  });
+
+  $('bc-old').addEventListener('click', () => {
+    closeModal('modal-bc-menu');
+    openModal('modal-bc-list');
+    loadBroadcasts();
+  });
+
+  async function loadBroadcasts() {
+    const box = $('bc-list');
+    box.innerHTML = '';
+    let list;
+    try { list = await api('/api/admin/broadcasts'); } catch (err) { return toast(err.message); }
+    if (!list.length) { box.appendChild(emptyDiv('Aucune notification envoyée pour le moment.')); return; }
+    list.forEach((n) => {
+      const it = document.createElement('div');
+      it.className = 'bc-item';
+      const p = document.createElement('p');
+      p.textContent = n.text;
+      const meta = document.createElement('small');
+      meta.textContent = fmtDay(n.ts) + ' ' + fmtTime(n.ts) + ' · ' + plural(n.recipients, 'destinataire', 'destinataires') + (n.edited ? ' · modifiée' : '');
+      const row = document.createElement('div');
+      row.className = 'row';
+      const ed = document.createElement('button');
+      ed.type = 'button';
+      ed.className = 'btn small';
+      ed.textContent = '✏️ Modifier';
+      ed.addEventListener('click', async () => {
+        const v = prompt('Nouveau texte de la notification :', n.text);
+        if (v === null || !v.trim() || v.trim() === n.text) return;
+        try { await api('/api/admin/broadcasts/' + n.id, 'PUT', { text: v.trim() }); toast('Notification modifiée.'); loadBroadcasts(); }
+        catch (err) { toast(err.message); }
+      });
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn small danger';
+      del.textContent = '🗑 Supprimer';
+      del.addEventListener('click', async () => {
+        if (!confirm('Supprimer cette notification chez ' + plural(n.recipients, 'compte', 'comptes') + ' ?')) return;
+        try { await api('/api/admin/broadcasts/' + n.id, 'DELETE'); toast('Notification supprimée.'); loadBroadcasts(); }
+        catch (err) { toast(err.message); }
+      });
+      row.appendChild(ed);
+      row.appendChild(del);
+      it.appendChild(p);
+      it.appendChild(meta);
+      it.appendChild(row);
+      box.appendChild(it);
+    });
+  }
 
   $('broadcast-form').addEventListener('submit', async (e) => {
     e.preventDefault();
