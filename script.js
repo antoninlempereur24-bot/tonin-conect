@@ -1054,7 +1054,7 @@
     if (!users.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = 8;
+      td.colSpan = 9;
       td.textContent = 'Aucun compte pour le moment.';
       tr.appendChild(td);
       body.appendChild(tr);
@@ -1077,6 +1077,8 @@
       nm.textContent = (u.admin ? '👑 ' : '') + (u.nickname ? u.nickname + ' (' + u.pseudo + ')' : u.pseudo);
       who.appendChild(nm);
       cell(who);
+
+      cell(u.isPublic ? '🌍 Public' : '🔒 Privé');
 
       const pin = document.createElement('code');
       pin.textContent = u.pin;
@@ -1322,6 +1324,7 @@
     av.appendChild(makeAvatar(c, true));
     $('profile-name').textContent = (c.staff ? '🛠️ ' : '') + c.name;
     $('profile-pseudo').textContent = c.pseudo;
+    $('profile-visibility').textContent = c.isPublic ? '🌍 Public' : '🔒 Privé';
     $('profile-nick').textContent = c.nickname || '—';
     $('profile-code').textContent = !c.isAdmin && c.shareCode ? c.shareCode : '—';
     $('profile-since').textContent = c.since ? fmtDate(c.since) : '—';
