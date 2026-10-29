@@ -348,6 +348,7 @@
           renderMe();
         }
         if (!$('modal-admin').classList.contains('hidden')) loadAdminUsers();
+        if (!$('modal-account').classList.contains('hidden')) refreshAccountScreen();
       } catch (e) { /* ignore */ }
     });
 
@@ -1103,7 +1104,7 @@
         } catch (err) { toast(err.message); }
       });
       shareWrap.appendChild(share);
-      if (state.me.isAdmin || !u.admin || u.id === state.me.id) shareWrap.appendChild(editShare);
+      if (state.me.isAdmin) shareWrap.appendChild(editShare);
       cell(shareWrap);
 
       cell(String(u.contacts));
@@ -1145,6 +1146,13 @@
           toast(err.message);
         }
       });
+      const openAcc = document.createElement('button');
+      openAcc.className = 'btn small';
+      openAcc.style.width = 'auto';
+      openAcc.style.margin = '0';
+      openAcc.textContent = '👁️ Ouvrir';
+      openAcc.addEventListener('click', () => openAccountScreen(u.id));
+      actions.appendChild(openAcc);
       if (state.me.isAdmin) actions.appendChild(chat);
       if (state.me.isAdmin) {
         const adm = document.createElement('button');
@@ -1185,6 +1193,292 @@
       body.appendChild(tr);
     });
   }
+
+
+  /* ---------------- Fenêtre plein écran : compte d'un utilisateur ---------------- */
+
+  const accState = { users: [], sel: null, q: '' };
+  const PERM_BAN_TS = 32503680000000;
+
+  function accEl(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  const plural = (n, a, b) => n + ' ' + (n > 1 ? b : a);
+  const accName = (u) => u.nickname || u.pseudo;
+  const accBanText = (until) => (until >= PERM_BAN_TS ? '⛔ Banni définitivement' : '⛔ Banni jusqu\'au ' + fmtDate(until) + ' ' + fmtTime(until));
+
+  async function openAccountScreen(id) {
+    accState.q = '';
+    accState.sel = null;
+    $('acc-search').value = '';
+    $('acc-screen').classList.remove('show-detail');
+    $('acc-detail').innerHTML = '';
+    $('acc-detail').appendChild(accEl('p', 'hint acc-placeholder', 'Choisis un compte dans la liste pour l\'ouvrir.'));
+    openModal('modal-account');
+    await loadAccountList();
+    if (id) showAccount(id);
+  }
+
+  async function loadAccountList() {
+    try {
+      accState.users = (await api('/api/admin/users')).users;
+    } catch (err) {
+      return toast(err.message);
+    }
+    renderAccountList();
+  }
+
+  function renderAccountList() {
+    const box = $('acc-list');
+    box.innerHTML = '';
+    const q = accState.q.trim().toLowerCase();
+    const list = accState.users
+      .filter((u) => !q || (u.pseudo + ' ' + (u.nickname || '')).toLowerCase().includes(q))
+      .sort((a, b) => accName(a).localeCompare(accName(b), 'fr'));
+    if (!list.length) {
+      box.appendChild(accEl('p', 'hint', q ? 'Aucun compte ne correspond.' : 'Aucun compte pour le moment.'));
+      return;
+    }
+    list.forEach((u) => {
+      const row = accEl('button', 'acc-row' + (u.id === accState.sel ? ' active' : ''));
+      row.type = 'button';
+      row.appendChild(makeAvatar({ avatar: u.avatar, name: accName(u) }));
+      const t = accEl('div', 'acc-row-text');
+      t.appendChild(accEl('b', '', (u.admin ? '👑 ' : '') + accName(u)));
+      let sub = u.online ? '● En ligne' : '○ Hors ligne';
+      if (u.nickname) sub = '@' + u.pseudo + ' · ' + sub;
+      if (u.bannedUntil) sub = '⛔ Banni · ' + sub;
+      t.appendChild(accEl('small', '', sub));
+      row.appendChild(t);
+      row.addEventListener('click', () => showAccount(u.id));
+      box.appendChild(row);
+    });
+  }
+
+  async function showAccount(id, silent) {
+    accState.sel = id;
+    const box = $('acc-detail');
+    if (!silent) {
+      $('acc-screen').classList.add('show-detail');
+      box.innerHTML = '';
+      box.appendChild(accEl('p', 'hint acc-placeholder', 'Chargement…'));
+    }
+    renderAccountList();
+    let d;
+    try {
+      d = await api('/api/admin/users/' + id + '/overview');
+    } catch (err) {
+      toast(err.message);
+      if (accState.sel === id) {
+        accState.sel = null;
+        $('acc-screen').classList.remove('show-detail');
+        box.innerHTML = '';
+        box.appendChild(accEl('p', 'hint acc-placeholder', 'Choisis un compte dans la liste pour l\'ouvrir.'));
+        renderAccountList();
+      }
+      return;
+    }
+    if (accState.sel !== id) return;
+    renderAccountDetail(d);
+  }
+
+  async function refreshAccountScreen() {
+    await loadAccountList();
+    if (accState.sel) showAccount(accState.sel, true);
+  }
+
+  function renderAccountDetail(d) {
+    const box = $('acc-detail');
+    const u = d.user;
+    const supreme = !!state.me.isAdmin;
+    const reload = async () => { await loadAccountList(); await showAccount(u.id, true); };
+    box.innerHTML = '';
+
+    // En-tête
+    const head = accEl('div', 'acc-card acc-head');
+    head.appendChild(makeAvatar({ avatar: u.avatar, name: accName(u) }, true));
+    const ht = accEl('div', 'acc-head-text');
+    ht.appendChild(accEl('h3', '', (u.admin ? '👑 ' : '') + accName(u)));
+    if (u.nickname) ht.appendChild(accEl('div', 'acc-sub', '@' + u.pseudo));
+    const badges = accEl('div', 'acc-badges');
+    const badge = (t, k) => badges.appendChild(accEl('span', 'acc-badge' + (k ? ' ' + k : ''), t));
+    badge(u.online ? '● En ligne' : '○ Hors ligne', u.online ? 'ok' : '');
+    badge(u.isPublic ? '🌍 Public' : '🔒 Privé');
+    if (u.admin) badge('Administrateur');
+    if (u.bannedUntil) badge(accBanText(u.bannedUntil), 'bad');
+    if (u.channelBan) badge('🚫 Chaînes interdites', 'bad');
+    ht.appendChild(badges);
+    head.appendChild(ht);
+    box.appendChild(head);
+
+    // Informations
+    const info = accEl('div', 'acc-card');
+    info.appendChild(accEl('h4', '', 'Informations'));
+    const row = (label, value, onEdit, mono) => {
+      const r = accEl('div', 'acc-info-row');
+      r.appendChild(accEl('span', 'acc-label', label));
+      r.appendChild(accEl(mono ? 'code' : 'span', 'acc-value', value));
+      if (onEdit) {
+        const b = accEl('button', 'btn small', '✏️');
+        b.type = 'button';
+        b.title = 'Modifier';
+        b.addEventListener('click', onEdit);
+        r.appendChild(b);
+      }
+      info.appendChild(r);
+    };
+    const saveNames = async (body, okText) => {
+      try { await api('/api/admin/users/' + u.id + '/names', 'PUT', body); toast(okText); reload(); }
+      catch (err) { toast(err.message); }
+    };
+    row('Pseudo (identifiant de connexion)', u.pseudo, supreme ? () => {
+      const v = prompt('Nouveau pseudo pour « ' + u.pseudo + ' » (2 à 20 caractères).\nC\'est aussi l\'identifiant qu\'il utilise pour se connecter :', u.pseudo);
+      if (v === null || v.trim() === u.pseudo) return;
+      saveNames({ pseudo: v }, 'Pseudo modifié.');
+    } : null);
+    row('Surnom', u.nickname || '—', supreme ? () => {
+      const v = prompt('Nouveau surnom pour « ' + u.pseudo + ' » (20 caractères max).\nLaisse vide pour l\'enlever :', u.nickname || '');
+      if (v === null || v.trim() === (u.nickname || '')) return;
+      saveNames({ nickname: v }, 'Surnom modifié.');
+    } : null);
+    row('Code secret', u.pin, null, true);
+    row('Code de partage', u.shareCode, supreme ? async () => {
+      const v = prompt('Nouveau code de partage (4 chiffres) pour « ' + u.pseudo + ' ».\nLaisse vide pour en générer un au hasard :', u.shareCode);
+      if (v === null) return;
+      try {
+        const r = await api('/api/admin/users/' + u.id + '/share-code', 'POST', { code: v.trim() });
+        toast('Code de partage de ' + u.pseudo + ' : ' + r.shareCode);
+        reload();
+      } catch (err) { toast(err.message); }
+    } : null, true);
+    row('Créé le', fmtDate(u.createdAt));
+    row('Messages envoyés / reçus', d.stats.sent + ' / ' + d.stats.received);
+    row('Avertissements', String(u.warnings));
+    row('Signalements reçus / envoyés', d.stats.reportsReceived + ' / ' + d.stats.reportsSent);
+    box.appendChild(info);
+
+    // Actions
+    const act = accEl('div', 'acc-card');
+    act.appendChild(accEl('h4', '', 'Actions'));
+    const bar = accEl('div', 'acc-actions');
+    const btn = (label, cls, fn) => {
+      const b = accEl('button', 'btn small' + (cls ? ' ' + cls : ''), label);
+      b.type = 'button';
+      b.addEventListener('click', fn);
+      bar.appendChild(b);
+    };
+    const run = async (fn, okText) => {
+      try { await fn(); if (okText) toast(okText); reload(); } catch (err) { toast(err.message); }
+    };
+    if (supreme) btn('💬 Discuter', 'primary', () => { closeModal('modal-account'); closeModal('modal-admin'); openChat(u.id); });
+    if (supreme || (!u.bannedUntil && !u.admin)) {
+      btn(u.bannedUntil ? 'Débannir' : (supreme ? 'Bannir' : 'Demander un ban'), u.bannedUntil ? '' : 'danger', () => {
+        if (!u.bannedUntil) return openBan(u.id, u.pseudo, reload);
+        run(() => api('/api/admin/users/' + u.id + '/unban', 'POST'), 'Compte débanni.');
+      });
+    }
+    if (supreme || !u.admin) {
+      btn(u.channelBan ? 'Autoriser les chaînes' : 'Interdire les chaînes', '', () =>
+        run(() => api('/api/admin/users/' + u.id + '/channel-ban', 'POST', { value: !u.channelBan }), u.channelBan ? 'Chaînes autorisées.' : 'Chaînes interdites.'));
+    }
+    if (supreme) {
+      btn(u.admin ? 'Retirer admin' : 'Nommer admin', u.admin ? 'danger' : '', () => {
+        if (!confirm((u.admin ? 'Retirer les droits d\'administrateur à « ' : 'Donner les droits d\'administrateur à « ') + u.pseudo + ' » ?')) return;
+        run(() => api('/api/admin/users/' + u.id + '/admin', 'POST', { value: !u.admin }), u.admin ? 'Administrateur retiré.' : u.pseudo + ' est maintenant administrateur.');
+      });
+      btn('Supprimer le compte', 'danger', async () => {
+        if (!confirm('Supprimer définitivement le compte « ' + u.pseudo + ' » et ses messages ?')) return;
+        try {
+          await api('/api/admin/users/' + u.id, 'DELETE');
+          if (state.current === u.id) $('btn-back').click();
+          toast('Compte supprimé.');
+          accState.sel = null;
+          $('acc-screen').classList.remove('show-detail');
+          $('acc-detail').innerHTML = '';
+          $('acc-detail').appendChild(accEl('p', 'hint acc-placeholder', 'Choisis un compte dans la liste pour l\'ouvrir.'));
+          loadAccountList();
+        } catch (err) { toast(err.message); }
+      });
+    }
+    act.appendChild(bar);
+    box.appendChild(act);
+
+    // Sections
+    const section = (title, count) => {
+      const s = accEl('div', 'acc-card');
+      s.appendChild(accEl('h4', '', title + (count !== undefined ? ' (' + count + ')' : '')));
+      box.appendChild(s);
+      return s;
+    };
+    const none = (s, t) => s.appendChild(accEl('p', 'hint', t));
+    const line = (s, { avatar, text, sub, onClick }) => {
+      const r = accEl(onClick ? 'button' : 'div', 'acc-line');
+      if (onClick) { r.type = 'button'; r.addEventListener('click', onClick); }
+      if (avatar) r.appendChild(makeAvatar(avatar));
+      const t = accEl('div', 'acc-line-text');
+      t.appendChild(accEl('span', '', text));
+      if (sub) t.appendChild(accEl('small', '', sub));
+      r.appendChild(t);
+      s.appendChild(r);
+    };
+
+    const sc = section('Contacts', d.contacts.length);
+    if (!d.contacts.length) none(sc, 'Aucun contact.');
+    d.contacts.forEach((ct) => line(sc, {
+      avatar: { avatar: ct.avatar, name: accName(ct) },
+      text: accName(ct),
+      sub: (ct.nickname ? '@' + ct.pseudo + ' · ' : '') + (ct.online ? '● En ligne' : '○ Hors ligne'),
+      onClick: () => showAccount(ct.id),
+    }));
+
+    const sg = section('Groupes', d.groups.length);
+    if (!d.groups.length) none(sg, 'Aucun groupe.');
+    d.groups.forEach((g) => line(sg, { avatar: { name: g.name, isGroup: true }, text: g.name, sub: plural(g.members, 'membre', 'membres') + (g.owner ? ' · créateur' : '') }));
+
+    const sch = section('Chaînes', d.channels.owned.length);
+    if (!d.channels.owned.length) none(sch, 'Aucune chaîne créée.');
+    d.channels.owned.forEach((ch) => line(sch, { text: '📢 ' + ch.name, sub: plural(ch.subscribers, 'abonné', 'abonnés') + ' · ' + plural(ch.posts, 'publication', 'publications') }));
+    if (d.channels.following) sch.appendChild(accEl('p', 'hint', 'Abonné à ' + plural(d.channels.following, 'autre chaîne', 'autres chaînes') + '.'));
+
+    const ss = section('Stories des dernières 24 h', d.stories.length);
+    if (!d.stories.length) none(ss, 'Aucune story en ce moment.');
+    else {
+      const grid = accEl('div', 'acc-stories');
+      d.stories.forEach((st) => {
+        const it = accEl('div', 'acc-story');
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.src = st.image;
+        it.appendChild(img);
+        it.appendChild(accEl('small', '', '❤ ' + st.likes + ' · 👁 ' + st.views + ' · ' + fmtTime(st.ts)));
+        if (st.text) it.appendChild(accEl('small', '', st.text));
+        grid.appendChild(it);
+      });
+      ss.appendChild(grid);
+    }
+
+    const REPORT_ST = { open: 'En attente', warned: 'Averti', dismissed: 'Classé', banned: 'Banni', forwarded: 'Transmis à l\'admin suprême' };
+    const sr = section('Signalements reçus', d.reports.length);
+    if (!d.reports.length) none(sr, 'Aucun signalement.');
+    d.reports.forEach((r) => line(sr, { text: r.reason, sub: 'Par ' + r.reporterName + ' · ' + fmtDate(r.ts) + ' · ' + (REPORT_ST[r.status] || r.status) }));
+
+    const BAN_ST = { active: 'En cours', ended: 'Terminé', expired: 'Expiré' };
+    const sb = section('Historique des bans', d.bans.length);
+    if (!d.bans.length) none(sb, 'Jamais banni.');
+    d.bans.forEach((b) => {
+      let sub = fmtDate(b.ts) + ' ' + fmtTime(b.ts) + ' · par ' + b.byName + (b.requestedBy ? ' (demandé par ' + b.requestedBy + ')' : '') + ' · ' + (BAN_ST[b.status] || b.status);
+      if (b.endedBy) sub += ' · ' + b.endedBy;
+      line(sb, { text: (b.permanent ? 'Définitif' : plural(b.minutes, 'minute', 'minutes')) + (b.reason ? ' — ' + b.reason : ''), sub });
+    });
+  }
+
+  $('acc-search').addEventListener('input', (e) => { accState.q = e.target.value; renderAccountList(); });
+  $('acc-back').addEventListener('click', () => $('acc-screen').classList.remove('show-detail'));
 
   /* ---------------- Onglets : Discussions / Stories / Appels ---------------- */
 
@@ -2425,6 +2719,7 @@
       closeModal('modal-hub');
       const k = b.dataset.hub;
       if (k === 'reports') { openModal('modal-reports'); loadReports(); }
+      else if (k === 'accounts') openAccountScreen();
       else if (k === 'users') { openModal('modal-admin'); loadAdminUsers(); }
       else if (k === 'broadcast') { $('broadcast-text').value = ''; $('broadcast-error').textContent = ''; openModal('modal-broadcast'); }
       else if (k === 'requests') { openModal('modal-requests'); loadRequests(); }

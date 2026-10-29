@@ -324,6 +324,26 @@
     </div>
   </div>
 
+  <!-- ====================== FENÊTRE PLEIN ÉCRAN : COMPTE D'UN UTILISATEUR ====================== -->
+  <div id="modal-account" class="modal fullscreen hidden">
+    <div id="acc-screen" class="acc-screen">
+      <header class="acc-top">
+        <button id="acc-back" class="icon-btn" type="button" title="Retour à la liste">←</button>
+        <h2>👤 Comptes des utilisateurs</h2>
+        <button class="icon-btn" data-close title="Fermer">✕</button>
+      </header>
+      <div class="acc-body">
+        <aside class="acc-side">
+          <input id="acc-search" type="search" placeholder="Rechercher un compte…" autocomplete="off" />
+          <div id="acc-list" class="acc-list"></div>
+        </aside>
+        <main class="acc-main">
+          <div id="acc-detail" class="acc-detail"></div>
+        </main>
+      </div>
+    </div>
+  </div>
+
   <!-- ====================== MODALE : PROFIL DU CONTACT ====================== -->
   <div id="modal-profile" class="modal hidden">
     <div class="modal-box small-box">
@@ -505,6 +525,7 @@
       <button class="btn hub-item" data-hub="broadcast" type="button"><span>🔔 Notification système</span></button>
       <button class="btn hub-item" data-hub="requests" type="button"><span>📨 Notifications des admins</span><span id="hub-requests-badge" class="badge hidden">0</span></button>
       <button class="btn hub-item" data-hub="reports" type="button"><span>⚠️ Signalements</span><span id="hub-reports-badge" class="badge hidden">0</span></button>
+      <button class="btn hub-item" data-hub="accounts" type="button"><span>👤 Ouvrir un compte</span></button>
       <button class="btn hub-item" data-hub="users" type="button"><span>👥 Comptes, codes et bans</span></button>
       <button class="btn hub-item" data-hub="banlog" type="button"><span>📜 Historique des bans</span></button>
       <button class="btn hub-item" data-hub="stories" type="button"><span>📸 Stories</span></button>

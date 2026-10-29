@@ -1607,13 +1607,10 @@ app.delete('/api/admin/users/:id', auth, supremeOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Modifier le code de partage (code d'ami) d'un compte : administrateur suprême ET administrateurs nommés
-app.post('/api/admin/users/:id/share-code', auth, adminOnly, (req, res) => {
+// Modifier le code de partage (code d'ami) d'un compte : administrateur suprême uniquement
+app.post('/api/admin/users/:id/share-code', auth, supremeOnly, (req, res) => {
   const u = getUser(req.params.id);
   if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
-  if (u.admin && !req.isAdmin && u.id !== req.userId) {
-    return res.status(403).json({ error: 'Seul l\'administrateur suprême peut agir sur un administrateur.' });
-  }
   const b = req.body || {};
   let code;
   if (b.random || b.code === undefined || String(b.code).trim() === '') {
@@ -1628,6 +1625,109 @@ app.post('/api/admin/users/:id/share-code', auth, adminOnly, (req, res) => {
   io.to(u.id).emit('contacts:update');
   io.to('staff').emit('contacts:update');
   res.json({ ok: true, shareCode: code });
+});
+
+// Modifier le pseudo (nom d'utilisateur choisi à la création) et/ou le surnom : administrateur suprême uniquement
+app.put('/api/admin/users/:id/names', auth, supremeOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  const b = req.body || {};
+  let newPseudo;
+  let newNick;
+  if (b.pseudo !== undefined) {
+    const p = cleanPseudo(b.pseudo);
+    if (!p) return res.status(400).json({ error: 'Le pseudo doit faire entre 2 et 20 caractères.' });
+    if (RESERVED.includes(p.toLowerCase())) return res.status(400).json({ error: 'Ce pseudo est réservé.' });
+    const other = findByPseudo(p);
+    if (other && other.id !== u.id) return res.status(409).json({ error: 'Ce pseudo est déjà pris.' });
+    newPseudo = p;
+  }
+  if (b.nickname !== undefined) {
+    const n = String(b.nickname || '').trim().replace(/\s+/g, ' ').slice(0, 20);
+    if (n && RESERVED.includes(n.toLowerCase())) return res.status(400).json({ error: 'Ce surnom est réservé.' });
+    newNick = n;
+  }
+  const old = u.pseudo;
+  let changed = false;
+  if (newPseudo !== undefined && newPseudo !== u.pseudo) {
+    u.pseudo = newPseudo;
+    changed = true;
+    addMessage('system', u.id, '🔔 L\'administrateur a modifié ton pseudo : « ' + old + ' » → « ' + newPseudo + ' ». C\'est ce nouveau pseudo qu\'il faut utiliser pour te connecter (ton code PIN ne change pas).');
+  }
+  if (newNick !== undefined && newNick !== (u.nickname || '')) { u.nickname = newNick; changed = true; }
+  if (changed) {
+    saveDb();
+    io.emit('contacts:update');
+    io.to('staff').emit('reports:update');
+  }
+  res.json({ ok: true, pseudo: u.pseudo, nickname: u.nickname || '' });
+});
+
+// Vue d'ensemble d'un compte (lecture seule) pour les administrateurs : pas de contenu des messages privés
+app.get('/api/admin/users/:id/overview', auth, adminOnly, (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  const now = Date.now();
+  let sent = 0;
+  let received = 0;
+  for (const m of db.messages) {
+    if (m.from === u.id) sent++;
+    else if (m.to === u.id && m.from !== 'system') received++;
+  }
+  const person = (c) => ({ id: c.id, pseudo: c.pseudo, nickname: c.nickname || '', avatar: c.avatar || '', online: isOnline(c.id) });
+  const label = (x) => (x ? (x.nickname ? x.nickname + ' (' + x.pseudo + ')' : x.pseudo) : 'Compte supprimé');
+  res.json({
+    user: {
+      id: u.id,
+      pseudo: u.pseudo,
+      nickname: u.nickname || '',
+      avatar: u.avatar || '',
+      pin: req.isAdmin ? u.pin : '••••',
+      shareCode: u.shareCode,
+      admin: !!u.admin,
+      isPublic: !!u.isPublic,
+      bannedUntil: banInfo(u) ? u.bannedUntil : 0,
+      channelBan: !!u.channelBan,
+      warnings: u.warnings || 0,
+      createdAt: u.createdAt,
+      online: isOnline(u.id),
+    },
+    stats: {
+      sent,
+      received,
+      reportsReceived: db.reports.filter((r) => r.targetId === u.id).length,
+      reportsSent: db.reports.filter((r) => r.reporterId === u.id).length,
+    },
+    contacts: u.contacts.map(getUser).filter(Boolean).map(person),
+    groups: db.groups.filter((g) => g.members.includes(u.id)).map((g) => ({ id: g.id, name: g.name, members: g.members.length, owner: g.ownerId === u.id })),
+    channels: {
+      owned: db.channels.filter((c) => c.ownerId === u.id).map((c) => ({ id: c.id, name: c.name, subscribers: c.subscribers.length, posts: c.posts.length })),
+      following: db.channels.filter((c) => c.ownerId !== u.id && c.subscribers.includes(u.id)).length,
+    },
+    stories: db.stories
+      .filter((st) => st.userId === u.id && st.ts >= now - STORY_TTL)
+      .sort((a, b) => b.ts - a.ts)
+      .map((st) => ({ id: st.id, image: st.image, text: st.text || '', ts: st.ts, likes: st.likes.length, views: Object.keys(st.views).length })),
+    reports: db.reports
+      .filter((r) => r.targetId === u.id)
+      .sort((a, b) => b.ts - a.ts)
+      .map((r) => ({ id: r.id, reason: r.reason, ts: r.ts, status: r.status, reporterName: label(getUser(r.reporterId)) })),
+    bans: db.banLog
+      .filter((e) => e.targetId === u.id)
+      .sort((a, b) => b.ts - a.ts)
+      .map((e) => ({
+        id: e.id,
+        ts: e.ts,
+        byName: e.byName,
+        requestedBy: e.requestedBy || '',
+        reason: e.reason || '',
+        permanent: !!e.permanent,
+        minutes: e.minutes || 0,
+        status: e.endedAt ? 'ended' : (e.until >= PERM_BAN || e.until > now) ? 'active' : 'expired',
+        endedAt: e.endedAt || 0,
+        endedBy: e.endedBy || '',
+      })),
+  });
 });
 
 app.get('/api/admin/reports', auth, adminOnly, (req, res) => {
